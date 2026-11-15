@@ -1,0 +1,15 @@
+# star-triage scratch space (exports, cloned repos, PR body)
+.triage/
+
+# local install state and log written by scripts/sync.py
+.star-triage/
+
+# Python
+__pycache__/
+*.pyc
+
+# Obsidian per-device state (keep the vault itself)
+.obsidian/workspace*.json
+.obsidian/cache
+
+.DS_Store

@@ -1,0 +1,12 @@
+{
+  "name": "star-triage",
+  "owner": { "name": "Bee", "url": "https://github.com/thebeekeper" },
+  "metadata": { "description": "star-triage: your GitHub stars, reviewed and installed for you" },
+  "plugins": [
+    {
+      "name": "star-triage",
+      "source": "./",
+      "description": "Installs what you approved from your reviewed GitHub stars, plus setup and sync skills."
+    }
+  ]
+}

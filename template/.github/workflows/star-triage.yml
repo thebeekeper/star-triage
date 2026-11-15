@@ -1,0 +1,39 @@
+name: star-triage
+
+# All the work happens in the star-triage Action, so this file stays this small and
+# improvements arrive by themselves. Docs: https://github.com/thebeekeper/star-triage
+
+on:
+  schedule:
+    # Every 3 hours (UTC). A check with no new stars stops before Claude runs.
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      max:
+        description: "Max repos this run (blank = max_per_run from config.yml)"
+        required: false
+        default: ""
+      retriage:
+        description: "Review these again (owner/name, comma separated), or: starter"
+        required: false
+        default: ""
+
+concurrency:
+  group: star-triage
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # save new notes (and merge review PRs that may merge themselves)
+  pull-requests: write   # open, update and merge the review PR
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: thebeekeper/star-triage@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          max: ${{ inputs.max }}
+          retriage: ${{ inputs.retriage }}

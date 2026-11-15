@@ -1,0 +1,69 @@
+filters:
+  and:
+    - file.hasTag("star-triage")
+    - 'file.ext == "md"'
+views:
+  - type: table
+    name: Inbox
+    filters:
+      and:
+        - 'status == "Inbox"'
+    order:
+      - file.name
+      - verdict
+      - risk
+      - saves_tokens
+      - relevant_to
+      - summary
+      - added
+  - type: table
+    name: All repos
+    order:
+      - file.name
+      - status
+      - verdict
+      - risk
+      - scan_risk
+      - install_kind
+      - auto_install
+      - approve
+      - saves_tokens
+      - type
+      - category
+      - relevant_to
+      - summary
+  - type: table
+    name: Try next
+    filters:
+      or:
+        - 'status == "Try next"'
+        - 'verdict == "Install"'
+    order:
+      - file.name
+      - verdict
+      - install
+      - risk
+  - type: table
+    name: Installs
+    filters:
+      or:
+        - 'auto_install == "queued"'
+        - 'auto_install == "available"'
+        - 'auto_install == "blocked"'
+        - 'approve == true'
+    order:
+      - file.name
+      - approve
+      - install_kind
+      - auto_install
+      - verdict
+      - risk
+      - scan_risk
+      - summary
+  - type: cards
+    name: Cards
+    order:
+      - file.name
+      - status
+      - verdict
+      - summary

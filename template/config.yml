@@ -1,0 +1,51 @@
+# star-triage configuration. Edit, commit, done.
+# The schedule lives in .github/workflows/star-triage.yml (GitHub requires it there).
+
+# Whose stars to read. Leave empty to use the owner of this repository.
+github_user: ""
+
+# Repos to research per run (newest stars first). The rest wait for the next run.
+# Each repo costs roughly one short research session, so start small.
+max_per_run: 8
+
+# Model for the triage step: sonnet (good and cheaper), opus (deeper), haiku (cheapest).
+model: sonnet
+
+# Reviewed plugins are listed in .claude-plugin/marketplace.json under this name. The
+# star-triage plugin installs the approved ones. Scope: user (all projects), project or local.
+marketplace_name: my-stars
+install_scope: user
+
+# Should review PRs merge themselves? Merging approves the installs in it, which then
+# happen on your computer by themselves.
+#   notes    = merge when the PR approves no new installs; installs wait for you (default)
+#   low-risk = also merge when every new install is Low risk (fully hands-off)
+#   never    = always wait for you
+auto_merge: notes
+
+# A few lines about you: what you build, your languages, what you want from repos.
+# Claude uses this to judge what is relevant and what is hype. Setup fills it in. Example:
+#   about_me: >
+#     Backend developer, mostly Python. I want fewer tokens and less hype.
+about_me: ""
+
+# Your projects and interests. Each name becomes a "relevant_to" label on notes.
+# Add your own above General, each with a name and a one-line description.
+contexts:
+  - name: General
+    description: Useful to know about, no specific project
+
+# Allowed label values. The validator rejects notes that use anything else.
+# Quote Yes/No: unquoted, YAML reads them as true/false.
+labels:
+  type: [Skill, Plugin, MCP server, Proxy / CLI, Library, Design system, Workflow pattern, App, Other]
+  category: [Token saving, Code navigation, Docs lookup, Monitoring, Workflow, Orchestration,
+             Video, Web scraping, Web automation, Security / RE, UI / Animation, Content, Other]
+  status: [Inbox, Reviewing, Try next, Using, Later, Skipped]
+  verdict: [Install, Try, When needed, Optional, Portfolio only, Not now, Skip]
+  risk: [Low, Medium, High]
+  saves_tokens: ["Yes", Partly, "No", Costs more]
+  source: [GitHub star, Manual]
+
+# Repos you starred but never want triaged (owner/name).
+ignore: []

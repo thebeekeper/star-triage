@@ -1,0 +1,285 @@
+name: star-triage
+description: Review your GitHub stars with Claude, scan them for security risks, and queue pinned installs for your approval.
+author: thebeekeper
+branding:
+  icon: star
+  color: yellow
+
+inputs:
+  claude_code_oauth_token:
+    description: Claude subscription token (from `claude setup-token`). Use this or anthropic_api_key.
+    required: false
+    default: ""
+  anthropic_api_key:
+    description: Anthropic API key. Use this or claude_code_oauth_token.
+    required: false
+    default: ""
+  max:
+    description: Max repos this run (blank = max_per_run from config.yml)
+    required: false
+    default: ""
+  retriage:
+    description: Review these again (owner/name, comma separated), or "starter"
+    required: false
+    default: ""
+  github_token:
+    description: Token used to read stars and open the review PR
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        {
+          echo "STAR_TRIAGE_ENGINE=$ACTION_PATH"
+          echo "STAR_TRIAGE_DATA=$GITHUB_WORKSPACE"
+          echo "PYTHONDONTWRITEBYTECODE=1"
+          echo "OSV_VERSION=v2.7.1"
+          echo "OSV_SHA256=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8"
+        } >> "$GITHUB_ENV"
+        echo "star-triage $(cat "$ACTION_PATH/VERSION" 2>/dev/null)"
+
+    - name: Find the open review PR, if any
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Only a PR this workflow opened: a branch in this repo (not a fork), authored by
+        # github-actions[bot]. Anyone can name a fork branch star-triage/..., so the name is not enough.
+        gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+          --json number,headRefName,headRepository,headRepositoryOwner,isCrossRepository,author \
+          | jq -r --arg repo "$GITHUB_REPOSITORY" '
+              [.[] | select((.headRefName | startswith("star-triage/"))
+                            and .isCrossRepository == false
+                            and ((.headRepositoryOwner.login + "/" + .headRepository.name) | ascii_downcase)
+                                == ($repo | ascii_downcase)
+                            and .author.is_bot == true
+                            and .author.login == "app/github-actions")]
+              | first // empty | "number=\(.number)\nbranch=\(.headRefName)"' >> "$GITHUB_OUTPUT"
+
+    # Third-party Actions are pinned to a full commit SHA; the comment is the release it is.
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      with:
+        token: ${{ inputs.github_token }}
+        fetch-depth: 0               # needed to see the open review PR's branch
+        persist-credentials: false   # keep the token out of .git/config while Claude runs
+
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+      with:
+        python-version: "3.12"
+
+    - name: Install script dependencies
+      shell: bash
+      run: pip install --quiet "pyyaml==6.0.2"
+
+    - name: Check setup (config.yml and secrets)
+      shell: bash
+      env:
+        HAS_OAUTH: ${{ inputs.claude_code_oauth_token != '' }}
+        HAS_APIKEY: ${{ inputs.anthropic_api_key != '' }}
+      run: python "$STAR_TRIAGE_ENGINE/scripts/doctor.py" --ci
+
+    - name: Count notes waiting in the open review PR as already tracked
+      if: steps.pr.outputs.branch != ''
+      shell: bash
+      env:
+        PR_BRANCH: ${{ steps.pr.outputs.branch }}
+        BASE: ${{ github.event.repository.default_branch || github.ref_name }}
+      run: |
+        # Brings in only the files that PR adds or changes, as a local commit that is
+        # never pushed. New stars then skip repos already waiting in that PR.
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        mapfile -t files < <(git -c core.quotePath=false diff --name-only --diff-filter=AM "origin/$BASE...origin/$PR_BRANCH" \
+                                 -- tracker .claude-plugin/marketplace.json installs.json)
+        if [ "${#files[@]}" -gt 0 ]; then
+          git checkout "origin/$PR_BRANCH" -- "${files[@]}"
+          git commit -qm "Pending notes from the open review PR (local only)"
+        fi
+        echo "Notes waiting in the open PR: ${#files[@]}"
+
+    - name: Export stars
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: python "$STAR_TRIAGE_ENGINE/scripts/export_stars.py"
+
+    - name: Pick new repos
+      id: pick
+      shell: bash
+      env:
+        MAX_INPUT: ${{ inputs.max }}
+        RETRIAGE_INPUT: ${{ inputs.retriage }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        python "$STAR_TRIAGE_ENGINE/scripts/select_new.py" --max "$MAX_INPUT" --retriage "$RETRIAGE_INPUT"
+        echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+    - name: Check Claude credentials
+      if: steps.pick.outputs.count != '0'
+      id: auth
+      shell: bash
+      env:
+        HAS_OAUTH: ${{ inputs.claude_code_oauth_token != '' }}
+        HAS_APIKEY: ${{ inputs.anthropic_api_key != '' }}
+      run: |
+        if [ "$HAS_OAUTH" = "true" ]; then echo "mode=oauth" >> "$GITHUB_OUTPUT"
+        elif [ "$HAS_APIKEY" = "true" ]; then echo "mode=apikey" >> "$GITHUB_OUTPUT"
+        else
+          msg="Add a CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) secret at https://github.com/$GITHUB_REPOSITORY/settings/secrets/actions/new , or run python star-triage.py setup on your computer."
+          echo "::error title=No Claude credentials::$msg"
+          printf '### No Claude credentials\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+    - name: Clone new repos (read-only copies, exact commit recorded)
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      run: python "$STAR_TRIAGE_ENGINE/scripts/clone_new.py"
+
+    - name: Dependency vulnerability scan (OSV, pinned and checksum-verified)
+      if: steps.pick.outputs.count != '0'
+      continue-on-error: true
+      shell: bash
+      run: |
+        curl -sSfL -o "$RUNNER_TEMP/osv-scanner" \
+          "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+        echo "${OSV_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+        chmod +x "$RUNNER_TEMP/osv-scanner"
+        mkdir -p .triage/osv
+        for d in .triage/repos/*/; do
+          n=$(basename "$d")
+          "$RUNNER_TEMP/osv-scanner" scan source -r --format json "$d" > ".triage/osv/$n.json" 2>/dev/null || true
+        done
+
+    - name: Security scan (plain code, before Claude)
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      run: |
+        python "$STAR_TRIAGE_ENGINE/scripts/scan_repo.py"
+        # Keep a copy Claude cannot touch. Later steps decide from this copy only.
+        mkdir -p "$RUNNER_TEMP/trusted"
+        cp .triage/new.json "$RUNNER_TEMP/trusted/"
+        cp -r .triage/scan "$RUNNER_TEMP/trusted/"
+        # The instructions travel with the engine; give Claude a copy inside the workspace.
+        cp "$STAR_TRIAGE_ENGINE/prompts/triage.md" .triage/triage-prompt.md
+
+    - name: Record hashes of the trusted copy and .git/config
+      if: steps.pick.outputs.count != '0'
+      id: seal
+      shell: bash
+      run: |
+        # One SHA-256 over the hash of every trusted file plus .git/config. It is kept as a
+        # step output, which lives in the runner, not in a file Claude could rewrite.
+        seal() { { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+                   sha256sum .git/config; } | sha256sum | cut -d' ' -f1; }
+        echo "sum=$(seal)" >> "$GITHUB_OUTPUT"
+
+    - name: Triage with Claude (subscription token)
+      if: steps.pick.outputs.count != '0' && steps.auth.outputs.mode == 'oauth'
+      id: claude_oauth
+      # If Claude stops early (turn cap, timeout, rate limit) the notes it finished are still
+      # published. The last step then fails the job so the stop is not missed.
+      continue-on-error: true
+      uses: anthropics/claude-code-action@f3b070c88125d33dbae5653df5f143101d4ea9dc  # v1.0.276
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        github_token: ${{ inputs.github_token }}
+        prompt: >-
+          Today is ${{ steps.pick.outputs.today }}. Follow the instructions in
+          .triage/triage-prompt.md exactly, using config.yml, .triage/new.json and .triage/scan/.
+        claude_args: >-
+          --model ${{ steps.pick.outputs.model }}
+          --max-turns ${{ steps.pick.outputs.max_turns }}
+          --allowedTools "Read,Glob,Grep,Write,WebSearch,WebFetch"
+          --disallowedTools "Bash,Edit,NotebookEdit"
+
+    - name: Triage with Claude (API key)
+      if: steps.pick.outputs.count != '0' && steps.auth.outputs.mode == 'apikey'
+      id: claude_apikey
+      continue-on-error: true
+      uses: anthropics/claude-code-action@f3b070c88125d33dbae5653df5f143101d4ea9dc  # v1.0.276
+      with:
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        github_token: ${{ inputs.github_token }}
+        prompt: >-
+          Today is ${{ steps.pick.outputs.today }}. Follow the instructions in
+          .triage/triage-prompt.md exactly, using config.yml, .triage/new.json and .triage/scan/.
+        claude_args: >-
+          --model ${{ steps.pick.outputs.model }}
+          --max-turns ${{ steps.pick.outputs.max_turns }}
+          --allowedTools "Read,Glob,Grep,Write,WebSearch,WebFetch"
+          --disallowedTools "Bash,Edit,NotebookEdit"
+
+    - name: Check Claude left the trusted copy and .git/config alone
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      env:
+        BEFORE: ${{ steps.seal.outputs.sum }}
+      run: |
+        seal() { { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+                   sha256sum .git/config; } | sha256sum | cut -d' ' -f1; }
+        if [ -z "$BEFORE" ] || [ "$(seal)" != "$BEFORE" ]; then
+          msg="The trusted scan copy or .git/config changed while Claude ran. Nothing was published. Run the workflow again; if it repeats, one of the reviewed repos is probably steering the reviewer."
+          echo "::error title=Integrity check failed::$msg"
+          printf '### Integrity check failed\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
+    - name: Undo anything Claude changed outside tracker/
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      run: |
+        # Restores config, installs.json and the marketplace file to the committed versions.
+        # The engine's code isn't in this repo at all, so Claude can't have touched it.
+        git restore --source=HEAD --worktree -- . ':(exclude)tracker'
+        git clean -fdq -- . ':(exclude)tracker'
+
+    - name: Merge security scan into notes and enforce the risk floor
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      env:
+        STAR_TRIAGE_TRUSTED: ${{ runner.temp }}/trusted
+      run: python "$STAR_TRIAGE_ENGINE/scripts/apply_scan.py"
+
+    - name: Validate notes (only notes for this run's repos are allowed)
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      env:
+        STAR_TRIAGE_TRUSTED: ${{ runner.temp }}/trusted
+      run: python "$STAR_TRIAGE_ENGINE/scripts/validate_notes.py" --changed
+
+    - name: Work out each install (registry-checked, pinned) and queue the approved ones
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      env:
+        STAR_TRIAGE_TRUSTED: ${{ runner.temp }}/trusted
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: python "$STAR_TRIAGE_ENGINE/scripts/queue_installs.py"
+
+    - name: Publish (open a review PR, or add to the open one; merge it if allowed)
+      if: steps.pick.outputs.count != '0'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        BASE: ${{ github.event.repository.default_branch || github.ref_name }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        PR_BRANCH: ${{ steps.pr.outputs.branch }}
+        WAITING: ${{ steps.pick.outputs.waiting }}
+        AUTO_MERGE: ${{ steps.pick.outputs.auto_merge }}
+      run: python "$STAR_TRIAGE_ENGINE/scripts/publish.py"
+
+    - name: Fail the run if Claude stopped early
+      if: always() && (steps.claude_oauth.outcome == 'failure' || steps.claude_apikey.outcome == 'failure')
+      shell: bash
+      run: |
+        msg="Claude stopped before finishing (turn cap, timeout or rate limit). Notes it had finished were published; the rest are picked up on the next run."
+        echo "::error title=Claude stopped early::$msg"
+        printf '### Claude stopped early\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+        exit 1
