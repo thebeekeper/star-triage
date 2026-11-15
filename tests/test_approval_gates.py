@@ -78,6 +78,19 @@ def main() -> None:
         note, entry = run_case(tmp / "kept", {"retriage": True, "previous": {"approve": True}})
         check("SEC-3 re-review, owner had ticked: their tick is kept", "approve: true" in note, note[:300])
 
+        # UT-15: a re-review where the old `approve: false` was only the default the last
+        # review wrote (auto_install "available") follows the new review; a real untick (the
+        # last review queued it, the owner set false) is kept.
+        note, entry = run_case(tmp / "redefault", {"retriage": True, "previous": {"approve": False},
+                                                   "previous_auto": "available"}, "Try", "Medium", "auto-plus")
+        check("UT-15 re-review: old default false follows the new approval", "approve: true" in note, note[:300])
+        note, entry = run_case(tmp / "reuntick", {"retriage": True, "previous": {"approve": False},
+                                                  "previous_auto": "queued"}, "Try", "Medium", "auto-plus")
+        check("UT-15 re-review: the owner's untick is kept", "approve: false" in note, note[:300])
+        note, entry = run_case(tmp / "retick", {"retriage": True, "previous": {"approve": True},
+                                                "previous_auto": "available"}, "Skip", "Low", "manual")
+        check("UT-15 re-review: the owner's tick is kept", "approve: true" in note, note[:300])
+
         cases = [  # (verdict, risk, mode, approved?)
             ("Try", "Medium", "auto-plus", True), ("When needed", "Low", "auto", True),
             ("Try", "Medium", "auto", False), ("Try", "Low", "manual", False),

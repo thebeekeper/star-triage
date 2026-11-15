@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.3.1
+- Fix: re-reviewing a repo kept the old `approve: false` even when that was only the default
+  the last review wrote, so a newly approved item stayed unticked and never installed. A
+  re-review now keeps the old value only when you chose it (ticked something that wasn't
+  approved, or unticked something that was).
+- Sync's "waiting" list also shows approved items you unticked, and says so.
+
 ## 5.3.0
 - Auto modes now install anything within their risk limit (`auto`: Low, `auto-plus`: Low and
   Medium), whatever the verdict, unless the review says Skip or Not now. Before, only Install

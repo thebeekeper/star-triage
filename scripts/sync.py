@@ -919,13 +919,17 @@ def main() -> int:
                 if wanted(items):
                     print("Everything you approved is installed.")
                 else:
-                    waiting = [(k, it) for k, it in sorted(items.items()) if it.get("status") == "available"]
+                    waiting = [(k, it) for k, it in sorted(items.items())
+                               if it.get("kind") in ("plugin", "skill", "mcp", "cli")
+                               and it.get("status") in ("available", "queued")]
                     if waiting:
                         # Say why each one waits, instead of asking for a merge already done (UT-14).
                         print("Nothing is approved to install yet. These wait for you:")
                         for key, it in waiting:
-                            print(f"  {key}: verdict {it.get('verdict') or '?'}, risk {it.get('risk') or '?'}."
-                                  f" To install it, tick `approve` in {it.get('note') or 'its note'}.")
+                            why = ("approve is unticked on its note" if it.get("status") == "queued"
+                                   else f"verdict {it.get('verdict') or '?'}, risk {it.get('risk') or '?'}")
+                            print(f"  {key}: {why}. To install it, tick `approve` in"
+                                  f" {it.get('note') or 'its note'}.")
                     else:
                         print("Nothing to install yet. Reviews that find something installable show up here.")
                 if not hook_installed():

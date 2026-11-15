@@ -54,6 +54,10 @@ def retriage_items(spec: str) -> list[dict]:
         item["retriage"] = True
         item["previous"] = {k: (fm[k].isoformat() if hasattr(fm[k], "isoformat") else fm[k])
                             for k in KEEP_ON_RETRIAGE if k in fm}
+        # What the last review set, so queue_installs can tell the owner's own tick or untick
+        # from the default it wrote (UT-15).
+        if isinstance(fm.get("auto_install"), str):
+            item["previous_auto"] = fm["auto_install"]
         item["note_path"] = md.relative_to(TRACKER_DIR.parent).as_posix()
         items.append(item)
     return items

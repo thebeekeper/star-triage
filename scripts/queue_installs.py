@@ -402,7 +402,12 @@ def main() -> None:
         # A re-review keeps the owner's own tick, read from the trusted new.json (select_new.py
         # copied it from the note before Claude ran). Otherwise the decision above stands.
         previous = (item.get("previous") or {}).get("approve") if item.get("retriage") else None
-        fm["approve"] = previous if isinstance(previous, bool) else entry["approved"]
+        # Keep the old tick only if the owner chose it. A value equal to what the last review
+        # wrote by default (approve = queued) is not a choice, so the new review decides.
+        prev_auto = item.get("previous_auto")
+        owner_chose = isinstance(previous, bool) and (
+            previous != (prev_auto == "queued") if isinstance(prev_auto, str) else previous is True)
+        fm["approve"] = previous if owner_chose else entry["approved"]
         write_note(note, fm, insert_plan(body, plan_section(entry)))
         if entry["status"] in report:
             report[entry["status"]].append(entry)
