@@ -1,5 +1,22 @@
 # Changelog
 
+## 5.2.0
+Auto mode. The default is still manual; nobody's mode changes unless they choose it.
+- One setting, `mode`: `manual` (I approve every install), `auto` (safe things install by
+  themselves, Low risk only) or `auto-plus` (Low and Medium). High-risk and blocked items are
+  never installed automatically.
+- Change it with `python star-triage.py mode` (menu), `mode auto`, the `/star-triage:mode`
+  skill, or setup. Each one updates `config.yml`, commits and pushes.
+- In auto modes an item installs only after a safety delay from its review (`auto_wait_hours`,
+  default 6) and under a daily limit (`auto_daily_limit`, default 5).
+- `pause` / `resume` stop or restart everything automatic on one computer. `undo` removes the
+  most recent automatic batch. `history` lists the last 20 automatic installs and removals.
+- The Claude Code start message in auto modes is one line; the doctor shows the mode and warns
+  when paused.
+- The older `auto_merge` key still works (`notes` = manual, `low-risk` = auto); `mode` wins.
+- `installs.json` items carry `reviewed_at`; `star-triage.py` (the launcher) gained the new
+  commands, and setup offers to update an older copy.
+
 ## 5.1.0
 Fixes from a November 2026 security and robustness audit, in four batches.
 

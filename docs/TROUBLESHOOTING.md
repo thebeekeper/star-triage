@@ -216,7 +216,7 @@ Merge it when you are ready; the next run starts a fresh PR.
 
 ### A notes-only PR was not merged automatically
 
-The run page says why. Usual causes: `auto_merge: never` in `config.yml`, or a branch
+The run page says why. Usual causes: an old `auto_merge: never` in `config.yml`, or a branch
 protection rule on your main branch that requires reviews or checks. Merge it yourself, or
 relax the rule for your own repo.
 
@@ -344,6 +344,38 @@ Automatic installs run when Claude Code **starts**, through the star-triage plug
 `/plugin` lists star-triage as installed and enabled, and that `--status` says "Automatic sync
 when Claude Code starts: on". Then quit Claude Code completely and start it again. The check runs at most every 5 minutes. Messages about
 what was installed appear the next time you start Claude Code.
+
+### Auto mode didn't install X
+
+Run `python3 star-triage.py sync --status` (the mode, whether it is paused, and each item's
+state) and `python3 star-triage.py history` (what was installed and why). The usual reasons:
+
+- **The safety delay.** An item installs only once its review is `auto_wait_hours` old
+  (default 6). The start message says "1 waiting (6 h safety delay)". It installs at a later
+  Claude Code start.
+- **The daily limit.** At most `auto_daily_limit` items (default 5) install per day on one
+  computer. The rest install on the following days.
+- **Paused.** `python3 star-triage.py resume` turns automatic installs back on. The doctor
+  warns while it is paused.
+- **The risk is too high for the mode.** `auto` approves Low risk only, `auto-plus` Low and
+  Medium. Anything above that leaves its review PR open: merge it, or tick `approve` on the
+  note. High risk is never installed automatically, in any mode: run
+  `python3 star-triage.py sync` yourself.
+- **Blocked.** A high-severity scan finding or bundled binaries block an item. Read its
+  Security scan section; if you still want it, tick `approve`, run `python3 star-triage.py sync`
+  and type `install`.
+- **Not approved at all.** Only the verdict Install is approved by a review. Try, Optional and
+  the rest wait for your tick.
+- **Claude Code wasn't restarted.** Installs run when Claude Code starts, at most every 5 minutes.
+- **The mode never reached GitHub.** `python3 star-triage.py mode` shows the mode on this
+  computer. If its push failed, the workflow still uses the old mode: run `git push` in your
+  data repo.
+
+### `mode`, `pause`, `undo` or `history` is not a command
+
+The `star-triage.py` launcher in your data repo is from before 5.2. Run
+`python3 star-triage.py setup --skip-config` and answer `y` when it offers to update the
+launcher. Until then, `/star-triage:mode` in Claude Code does the same.
 
 ### `Nothing approved yet`
 

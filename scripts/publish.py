@@ -5,14 +5,16 @@ Runs last in the workflow, after the notes are validated and plugins queued.
   - No PR open: commit the new notes on a fresh star-triage/<date> branch and open a PR.
   - A PR is still open: add the new notes to that PR as one more commit, so a week
     without merging gives you one bigger PR instead of a backlog nobody triaged.
-  - auto_merge (config.yml) decides whether the PR merges itself:
-      notes     merge when it approves no new installs (default)
-      low-risk  also merge when every newly approved install is Low risk
-      never     always wait for you
+  - mode (config.yml) decides whether the PR merges itself:
+      manual     merge when it approves no new installs (default)
+      auto       also merge when every newly approved install is Low risk
+      auto-plus  also merge when every newly approved install is Low or Medium risk
+    (An old config with `auto_merge: never` and no `mode` still always waits.)
     Merging is the approval: approved installs then happen on your computer by themselves.
 
 Environment (set by the workflow): GH_TOKEN, GITHUB_REPOSITORY, BASE (default branch),
-PR_NUMBER and PR_BRANCH (empty when no PR is open), WAITING, AUTO_MERGE.
+PR_NUMBER and PR_BRANCH (empty when no PR is open), WAITING, AUTO_MERGE (the mode, from
+select_new.py; the names used before 5.2, notes and low-risk, still work).
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import sys
 import yaml
 
 from common import FRONTMATTER_RE, ROOT, WORK_DIR, write_summary
+from paths import MODE_RISKS, may_merge
 
 BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
@@ -96,6 +99,10 @@ def new_approvals(base: str) -> list[dict]:
     return fresh
 
 
+def risk_words(policy: str) -> str:
+    return " or ".join(MODE_RISKS.get(policy, ())) or "Low"
+
+
 def footer(waiting: str, auto: str, notes_only: bool, will_merge: bool = False) -> str:
     lines = [FOOTER]
     if waiting == "1":
@@ -103,7 +110,7 @@ def footer(waiting: str, auto: str, notes_only: bool, will_merge: bool = False) 
     elif waiting not in ("", "0"):
         lines.append(f"_{waiting} more starred repos are waiting for the next run._")
     if will_merge:
-        lines.append("Merged automatically: " + ("its installs are all Low risk and auto_merge is low-risk."
+        lines.append("Merged automatically: " + (f"its installs are all {risk_words(auto)} risk and the mode is {auto}."
                                                  if not notes_only else "nothing new to install."))
     elif not notes_only:
         lines.append("This PR approves installs, so it waits for you. Review the notes (especially "
@@ -120,7 +127,8 @@ def main() -> None:
     pr_number = os.environ.get("PR_NUMBER", "")
     pr_branch = os.environ.get("PR_BRANCH", "")
     waiting = os.environ.get("WAITING", "0")
-    auto = os.environ.get("AUTO_MERGE", "notes")
+    auto = os.environ.get("AUTO_MERGE") or "manual"
+    auto = {"notes": "manual", "low-risk": "auto"}.get(auto, auto)
     token = os.environ["GH_TOKEN"]
 
     new_files = git("ls-files", "--others", "--exclude-standard", "--", "tracker", MARKET, INSTALLS).splitlines()
@@ -158,8 +166,7 @@ def main() -> None:
     notes_in_pr = [p for p in pr_files if p.startswith("tracker/") and p.endswith(".md")]
     approvals = new_approvals(base)
     notes_only = not approvals
-    can_merge = (auto == "notes" and not approvals) or \
-                (auto == "low-risk" and all(a.get("risk") == "Low" for a in approvals))
+    can_merge = may_merge(auto, [a.get("risk") for a in approvals])
     title = f"star-triage: {len(notes_in_pr)} new repo{'s' if len(notes_in_pr) != 1 else ''}"
     today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -212,7 +219,8 @@ def main() -> None:
                 break
             merged = res.stderr.strip()
         if merged is True:
-            what = (f"{len(approvals)} low-risk install(s) approved" if approvals else "nothing new to install")
+            what = (f"{len(approvals)} {risk_words(auto)}-risk install(s) approved, mode {auto}"
+                    if approvals else "nothing new to install")
             write_summary(f"{verb} and **merged it automatically** ({what}): {url}\n\n{section}")
             return
         print(f"::warning::Could not auto-merge PR #{pr_number}: {merged}")
@@ -222,8 +230,8 @@ def main() -> None:
 
     if auto == "never":
         why = "auto_merge is set to never"
-    elif auto == "low-risk":
-        why = "it approves installs that are not Low risk"
+    elif auto in ("auto", "auto-plus"):
+        why = f"it approves installs that are not {risk_words(auto)} risk (mode {auto})"
     else:
         why = f"it approves {len(approvals)} install(s)"
     write_summary(f"{verb}: {url}\n\n**Waiting for you to merge**, because {why}.\n\n{section}")

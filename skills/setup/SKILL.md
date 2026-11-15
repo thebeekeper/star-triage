@@ -52,11 +52,12 @@ the check is `${CLAUDE_PLUGIN_ROOT}/scripts/doctor.py`.
    - Their current projects and interests, each with one line. These become the
      `relevant_to` labels on notes, so keep names short (2 to 4 words). Always keep `General`.
    - How many repos per run (default 8; 3 to 5 keeps usage low).
-   - How hands-off: `auto_merge: notes` (default: PRs that approve installs wait for them),
-     `low-risk` (Low-risk installs approve themselves too) or `never`.
+   - Who approves installs: `mode: manual` (default: they approve every install), `auto`
+     (safe things install by themselves, Low risk only) or `auto-plus` (Low and Medium).
+     High-risk and blocked items never install automatically. Never pick an auto mode for them.
 
 5. Edit config.yml with the answers: `about_me` (3 to 5 lines, in their words, including what
-   they are sceptical of), `contexts`, `max_per_run`, `auto_merge`. Quote strings that contain
+   they are sceptical of), `contexts`, `max_per_run`, `mode`. Quote strings that contain
    a colon. Keep the comments and the `labels` section. Leave `github_user` empty unless they
    want someone else's stars. Run the doctor again and fix any config problem it reports.
 

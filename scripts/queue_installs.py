@@ -25,6 +25,7 @@ auto_install / approve, an "Install plan (automated)" note section, and
 """
 from __future__ import annotations
 
+import datetime as dt
 import ipaddress
 import json
 import os
@@ -353,7 +354,9 @@ def main() -> None:
         entry = {"repo": item["repo"], "url": item["url"], "note": item["note_path"],
                  "kind": decision["kind"], "name": decision["name"], "spec": decision["spec"],
                  "commit": commit, "verdict": str(fm.get("verdict", "")), "risk": str(fm.get("risk", "")),
-                 "reviewed": str(fm.get("reviewed", ""))}
+                 "reviewed": str(fm.get("reviewed", "")),
+                 # When this review finished (UTC). Auto mode waits auto_wait_hours from here.
+                 "reviewed_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
         blockers = list(scan.get("install_blockers") or ([] if scan else ["no security scan"]))
         if decision["kind"] in ("plugin", "skill") and not re.fullmatch(r"[0-9a-f]{40}", commit):
             blockers.append("reviewed commit unknown")

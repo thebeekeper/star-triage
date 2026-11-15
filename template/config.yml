@@ -1,6 +1,11 @@
 # star-triage configuration. Edit, commit, done.
 # The schedule lives in .github/workflows/star-triage.yml (GitHub requires it there).
 
+# Who approves installs: manual (you approve every install), auto (Low-risk items install
+# by themselves) or auto-plus (Low and Medium). High-risk and blocked items always wait for
+# you. Change it with: python star-triage.py mode
+mode: manual
+
 # Whose stars to read. Leave empty to use the owner of this repository.
 github_user: ""
 
@@ -16,12 +21,10 @@ model: sonnet
 marketplace_name: my-stars
 install_scope: user
 
-# Should review PRs merge themselves? Merging approves the installs in it, which then
-# happen on your computer by themselves.
-#   notes    = merge when the PR approves no new installs; installs wait for you (default)
-#   low-risk = also merge when every new install is Low risk (fully hands-off)
-#   never    = always wait for you
-auto_merge: notes
+# Auto modes only. An item installs by itself once its review is this many hours old (time
+# to untick it or pause), and at most this many items install per day on one computer.
+auto_wait_hours: 6
+auto_daily_limit: 5
 
 # A few lines about you: what you build, your languages, what you want from repos.
 # Claude uses this to judge what is relevant and what is hype. Setup fills it in. Example:

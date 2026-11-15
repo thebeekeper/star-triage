@@ -4,6 +4,9 @@
     python star-triage.py sync --dry-run       show the plan, change nothing
     python star-triage.py sync --status        everything reviewed that can be installed, and its state here
     python star-triage.py sync --uninstall X   remove one (owner/name or its name) and untick its approve box
+    python star-triage.py pause | resume       stop or restart everything automatic on this computer
+    python star-triage.py undo                 remove the most recent automatic batch and untick its notes
+    python star-triage.py history              the last 20 automatic installs and removals
 
 Automatic mode: the star-triage Claude Code plugin runs this in the background whenever
 Claude Code starts (its SessionStart hook calls `sync.py --hook`). Without the plugin,
@@ -15,6 +18,12 @@ What counts as approved
   - Anything you tick `approve` on in Obsidian. Untick it and the item is removed again.
   - Blocked items (high-severity scan findings, binaries) are never installed in the
     background. Run this script by hand to confirm one.
+
+Auto mode (`mode: auto` or `auto-plus` in config.yml, see mode.py): the background run installs
+an item only once its review is auto_wait_hours old (default 6, time to untick it or pause)
+and while fewer than auto_daily_limit (default 5) were installed today. High-risk and blocked
+items are never installed in the background. Every automatic action goes to
+.star-triage/history.jsonl, which `history` and `undo` read.
 
 It never installs anything that is not in installs.json, never passes --yes, and never
 copies your API keys anywhere: an MCP server that needs a key is listed with the command
@@ -41,8 +50,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from doctor import find_claude  # noqa: E402  (standard library only)
 
-from paths import (ENGINE_DIR, TROUBLESHOOTING_URL, find_data_root, linked_data_root,  # noqa: E402
-                   running_as_plugin, safe_console, write_link)
+from paths import (ENGINE_DIR, MODE_SHORT, TROUBLESHOOTING_URL, daily_limit, find_data_root,  # noqa: E402
+                   linked_data_root, read_mode, read_simple_config, running_as_plugin, safe_console,
+                   wait_hours, write_link)
 
 # Automatic runs use only the data repo you linked (setup, or STAR_TRIAGE_DATA), never the
 # folder Claude Code happens to be opened in: that folder may be someone else's project.
@@ -57,6 +67,8 @@ LOG_PATH = STATE_DIR / "sync.log"
 RESULT_PATH = STATE_DIR / "last-result.json"
 HOOK_STAMP = STATE_DIR / "hook.json"
 LOCK_PATH = STATE_DIR / "sync.lock"
+PAUSE_PATH = STATE_DIR / "paused"          # present = nothing automatic happens on this computer
+HISTORY_PATH = STATE_DIR / "history.jsonl"  # one line per automatic install or removal
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 SKILLS_DIR = CLAUDE_DIR / "skills"
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
@@ -88,6 +100,37 @@ def load_json(path: Path, default):
 def save_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def settings() -> tuple[str, int, int]:
+    """(mode, hours an item waits after its review, installs allowed per day) from config.yml."""
+    cfg = read_simple_config(ROOT / "config.yml")
+    return read_mode(cfg), wait_hours(cfg), daily_limit(cfg)
+
+
+def history_read() -> list[dict]:
+    try:
+        lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("key"):
+            rows.append(row)
+    return rows
+
+
+def history_add(rows: list[dict]) -> None:
+    if not rows:
+        return
+    STATE_DIR.mkdir(exist_ok=True)
+    with HISTORY_PATH.open("a", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 class Runner:
@@ -439,6 +482,60 @@ def plan(items: dict, state: dict, prune: bool) -> list[tuple[str, str, dict]]:
     return steps
 
 
+def reviewed_time(item: dict) -> dt.datetime | None:
+    """When the item's review finished (UTC), or None when installs.json does not say."""
+    for field in ("reviewed_at", "reviewed"):
+        try:
+            when = dt.datetime.fromisoformat(str(item.get(field) or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return when if when.tzinfo else when.replace(tzinfo=dt.timezone.utc)
+    return None
+
+
+def hold_back(steps: list, wait_h: int, limit: int, history: list[dict], now: dt.datetime | None = None):
+    """Auto modes, background only. Splits the plan into (run now, waiting for the safety delay,
+    over today's limit, High risk). Removals never wait. Blocked items go through to execute(),
+    which refuses them in the background as it always did."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    today = dt.date.today().isoformat()
+    used = sum(1 for h in history if h.get("auto") and h.get("action") in ("installed", "updated")
+               and str(h.get("at", ""))[:10] == today)
+    run, waiting, capped, high = [], [], [], []
+    for step in steps:
+        action, _, item = step
+        when = reviewed_time(item)
+        if action == "remove" or item.get("status") == "blocked":
+            run.append(step)
+        elif item.get("risk") == "High":
+            high.append(step)
+        elif when and now - when < dt.timedelta(hours=wait_h):
+            waiting.append(step)
+        elif used >= limit:
+            capped.append(step)
+        else:
+            used += 1
+            run.append(step)
+    return run, waiting, capped, high
+
+
+def short_name(key: str, item: dict) -> str:
+    return str(item.get("name") or item.get("spec", {}).get("plugin") or key.rsplit("/", 1)[-1])
+
+
+def why(action: str, item: dict, old: dict | None) -> str:
+    """The reason written to the history for one step."""
+    old = old or {}
+    if action == "remove":
+        if not item.get("note") and "approved" not in item:
+            return "removed: no longer in installs.json"
+        downgraded = not item.get("approved") and (
+            old.get("by") == "workflow" or ("by" not in old and old.get("fp") != fingerprint(item)))
+        return "removed: downgraded by re-review" if downgraded else "removed: approve unticked"
+    how = "approved by the review" if item.get("approved") else "you ticked approve"
+    return f"{'new reviewed version' if action == 'update' else 'installed'}: {item.get('risk') or 'unknown'} risk, {how}"
+
+
 def describe(item: dict) -> str:
     spec = item.get("spec", {})
     return {"plugin": f"plugin {spec.get('plugin', '')}",
@@ -448,7 +545,8 @@ def describe(item: dict) -> str:
 
 
 def execute(steps, state: dict, sync: Sync, confirm_blocked: bool) -> dict:
-    result = {"at": dt.datetime.now().isoformat(timespec="seconds"), "done": [], "failed": [], "skipped": []}
+    result = {"at": dt.datetime.now().isoformat(timespec="seconds"), "done": [], "failed": [], "skipped": [],
+              "log": []}
     for action, key, item in steps:
         label = f"{action} {key}: {describe(item)}"
         if action != "remove" and item.get("status") == "blocked":
@@ -466,6 +564,7 @@ def execute(steps, state: dict, sync: Sync, confirm_blocked: bool) -> dict:
                 continue
         print(f"\n{label}")
         handler = getattr(sync, item["kind"])
+        reason = why(action, item, state.get(key))
         out = handler(item, action, state.get(key))
         if out is None:
             result["failed"].append(label)
@@ -473,11 +572,14 @@ def execute(steps, state: dict, sync: Sync, confirm_blocked: bool) -> dict:
         result["done"].append(label)
         if sync.run.dry:
             continue
+        result["log"].append({"action": {"install": "installed", "update": "updated", "remove": "removed"}[action],
+                              "key": key, "name": short_name(key, item), "what": describe(item), "why": reason})
         if action == "remove":
             state.pop(key, None)
         else:
             state[key] = {"kind": item["kind"], "name": item.get("name", ""), "fp": fingerprint(item),
-                          "spec": item.get("spec", {}), "at": dt.date.today().isoformat(), **out}
+                          "spec": item.get("spec", {}), "at": dt.date.today().isoformat(),
+                          "by": "workflow" if item.get("approved") else "tick", **out}
         save_json(STATE_PATH, state)
     result["notes"] = sync.notes
     return result
@@ -572,16 +674,28 @@ def run_hook() -> int:
         if not LINKED or (not (ROOT / "installs.json").exists() and not (ROOT / "config.yml").exists()):
             return 0  # no data repo linked yet: stay silent
         messages = []
+        mode, wait_h, limit = settings()
+        auto = mode != "manual"
+        parts, extra = [], []  # auto modes: everything goes into one short line
         last = load_json(RESULT_PATH, {})
         if last and not last.get("shown"):
-            bits = []
-            if last.get("done"):
-                bits.append("installed/updated: " + "; ".join(d.split(": ", 1)[-1] for d in last["done"]))
-            if last.get("failed"):
-                bits.append(f"{len(last['failed'])} failed (see .star-triage/sync.log)")
-            bits += last.get("skipped", []) + last.get("notes", [])
-            if bits:
-                messages.append("star-triage: " + " | ".join(bits))
+            if auto and "log" in last:
+                for verb in ("installed", "updated", "removed"):
+                    names = [str(r.get("name")) for r in last["log"] if r.get("action") == verb]
+                    if names:
+                        parts.append(f"{verb} " + ", ".join(names))
+                if last.get("failed"):
+                    parts.append(f"{len(last['failed'])} failed (see .star-triage/sync.log)")
+                extra = last.get("skipped", []) + last.get("notes", [])
+            else:
+                bits = []
+                if last.get("done"):
+                    bits.append("installed/updated: " + "; ".join(d.split(": ", 1)[-1] for d in last["done"]))
+                if last.get("failed"):
+                    bits.append(f"{len(last['failed'])} failed (see .star-triage/sync.log)")
+                bits += last.get("skipped", []) + last.get("notes", [])
+                if bits:
+                    messages.append("star-triage: " + " | ".join(bits))
             last["shown"] = True
             save_json(RESULT_PATH, last)
         stamp = load_json(HOOK_STAMP, {})
@@ -590,11 +704,30 @@ def run_hook() -> int:
             pull(quiet=True)
             items = load_json(INSTALLS_PATH, {}).get("items", {})
             steps = plan(items, load_json(STATE_PATH, {}), prune=False)
-            if steps:
+            if PAUSE_PATH.exists():
+                if steps:
+                    messages.append(f"star-triage is paused: {len(steps)} approved change(s) not applied. "
+                                    "Resume: python star-triage.py resume")
+            elif auto:
+                run, waiting, capped, high = hold_back(steps, wait_h, limit, history_read())
+                if run:
+                    start_background()
+                    names = [short_name(k, i) for a, k, i in run if a != "remove" and i.get("status") != "blocked"]
+                    if names:
+                        parts.append("installing " + ", ".join(names[:5]) + " now")
+                if waiting:
+                    parts.append(f"{len(waiting)} waiting ({wait_h} h safety delay)")
+                if capped:
+                    parts.append(f"{len(capped)} waiting (daily limit {limit})")
+                if high:
+                    parts.append(f"{len(high)} High risk, never automatic (run: python star-triage.py sync)")
+            elif steps:
                 start_background()
                 names = ", ".join(f"{a} {describe(i)}" for a, k, i in steps[:5])
                 messages.append(f"star-triage: installing {len(steps)} approved item(s) in the background ({names}). "
                                 "Skills work right away; plugins and MCP servers load next time you start Claude Code.")
+        if parts or extra:
+            messages.insert(0, " | ".join([f"star-triage {mode}: " + ("; ".join(parts) or "nothing installed")] + extra))
         if messages:
             emit("\n".join(messages), "\n".join(messages))
     except Exception as exc:  # a broken sync must never break Claude Code
@@ -614,6 +747,75 @@ def start_background() -> None:
     subprocess.Popen(cmd, **kwargs)
 
 
+# ----------------------------------------------------------------- pause, history, undo
+
+def pause(on: bool) -> int:
+    if on:
+        STATE_DIR.mkdir(exist_ok=True)
+        PAUSE_PATH.write_text(dt.datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
+        print("Paused. Nothing is installed or removed automatically on this computer until you run: "
+              "python star-triage.py resume")
+        print("(`python star-triage.py sync` by hand still works. Reviews on GitHub are not affected.)")
+    else:
+        was = PAUSE_PATH.exists()
+        PAUSE_PATH.unlink(missing_ok=True)
+        print("Resumed. Automatic installs run again the next time Claude Code starts." if was
+              else "Not paused: automatic installs are already running.")
+    return 0
+
+
+def show_history() -> int:
+    rows = history_read()[-20:][::-1]
+    if not rows:
+        print("No automatic installs or removals yet.")
+        return 0
+    for row in rows:
+        when = str(row.get("at", ""))[:16].replace("T", " ")
+        print(f"{when}  {row.get('what') or row['key']:40} {row.get('why', row.get('action', ''))}")
+    return 0
+
+
+def undo(scope: str) -> int:
+    """Remove everything the most recent automatic batch installed, and untick those notes."""
+    rows = history_read()
+    batches = [r.get("batch") for r in rows if r.get("auto") and r.get("action") == "installed"]
+    if not batches:
+        print("Nothing to undo: nothing has been installed automatically yet.")
+        return 0
+    batch = batches[-1]
+    state = load_json(STATE_PATH, {})
+    items = load_json(INSTALLS_PATH, {}).get("items", {})
+    keys = list(dict.fromkeys(r["key"] for r in rows if r.get("batch") == batch and r.get("auto")
+                              and r.get("action") == "installed" and r["key"] in state))
+    when = str(batch)[:16].replace("T", " ")
+    if not keys:
+        print(f"The most recent automatic batch ({when}) is already removed.")
+        return 0
+    steps = [("remove", key, items.get(key) or {"repo": key, "kind": state[key]["kind"], "name": state[key].get("name", ""),
+                                                 "spec": state[key].get("spec", {}), "note": ""}) for key in keys]
+    print(f"The most recent automatic batch ({when}) installed:")
+    for _, key, item in steps:
+        print(f"  {key}: {describe(item)}")
+    try:
+        answer = input(f"Remove {'it' if len(steps) == 1 else f'these {len(steps)}'} and untick "
+                       f"{'its note' if len(steps) == 1 else 'their notes'}? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if not answer.startswith("y"):
+        print("Nothing was changed.")
+        return 0
+    res = execute(steps, state, Sync(Runner(False, True), find_claude(), scope), True)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    for row in res["log"]:
+        note = (items.get(row["key"]) or {}).get("note")
+        if note:
+            set_note_approve(note, False)
+    history_add([{"at": now, "batch": batch, "auto": False, **row, "why": "removed: undone by you"}
+                 for row in res["log"]])
+    print(f"\nRemoved {len(res['log'])} of {len(steps)}. Their notes are unticked, so they stay removed.")
+    return 1 if res["failed"] else 0
+
+
 # ----------------------------------------------------------------- main
 
 def main() -> int:
@@ -628,6 +830,10 @@ def main() -> int:
     ap.add_argument("--scope", choices=["user", "project", "local"], help="plugin scope (default: install_scope)")
     ap.add_argument("--install-hook", action="store_true", help="sync automatically when Claude Code starts")
     ap.add_argument("--remove-hook", action="store_true", help="stop syncing automatically")
+    ap.add_argument("--pause", action="store_true", help="stop everything automatic on this computer")
+    ap.add_argument("--resume", action="store_true", help="let automatic installs run again")
+    ap.add_argument("--undo", action="store_true", help="remove the most recent automatic batch")
+    ap.add_argument("--history", action="store_true", help="the last 20 automatic installs and removals")
     ap.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -646,9 +852,16 @@ def main() -> int:
               "and tracker/), or link one with: python <engine>/scripts/setup.py")
         return 1
 
+    if args.pause or args.resume:
+        return pause(args.pause)
+    if args.history:
+        return show_history()
+    if args.undo:
+        return undo(args.scope or read_scope())
+
     background = args.background
     if background:
-        if lock_busy():
+        if PAUSE_PATH.exists() or lock_busy():
             return 0
         STATE_DIR.mkdir(exist_ok=True)
         LOCK_PATH.write_text(str(os.getpid()))
@@ -673,6 +886,11 @@ def main() -> int:
                 print(f"  {key:40} {describe(item):38} {flag:10} {here}")
             print(f"\nAutomatic sync when Claude Code starts: {'on' if hook_installed() else 'off'}"
                   + ("" if hook_installed() else "  (turn on: python star-triage.py sync --install-hook)"))
+            mode, wait_h, limit = settings()
+            print(f"Mode: {mode} ({MODE_SHORT[mode]})"
+                  + (f", after a {wait_h} h safety delay, at most {limit} a day" if mode != "manual" else ""))
+            if PAUSE_PATH.exists():
+                print("PAUSED: nothing automatic happens on this computer. Resume: python star-triage.py resume")
             return 0
 
         if args.uninstall:
@@ -692,6 +910,10 @@ def main() -> int:
             return 1 if res["failed"] else 0
 
         steps = plan(items, state, args.prune)
+        mode, wait_h, limit = settings()
+        high = []
+        if background and mode != "manual":
+            steps, _, _, high = hold_back(steps, wait_h, limit, history_read())
         if not steps:
             if not background:
                 print("Everything you approved is installed." if wanted(items) else
@@ -707,7 +929,12 @@ def main() -> int:
         result = execute(steps, state, sync, confirm_blocked=not background and not args.dry_run)
 
         if background:
-            save_json(RESULT_PATH, {**result, "shown": False})
+            now = dt.datetime.now().isoformat(timespec="seconds")
+            history_add([{"at": now, "batch": result["at"], "auto": True, "mode": mode, **row}
+                         for row in result["log"]])
+            result["skipped"] += [f"{key} is High risk, so it is never installed automatically; "
+                                  "run `python star-triage.py sync` yourself to install it" for _, key, _ in high]
+            save_json(RESULT_PATH, {**result, "mode": mode, "shown": False})
             return 0
         for line in result["skipped"] + result["notes"]:
             print(f"\nNote: {line}")

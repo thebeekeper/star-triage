@@ -8,7 +8,8 @@ My GitHub stars, reviewed by [star-triage](https://github.com/thebeekeper/star-t
 - **`installs.json`**: every install that was reviewed, pinned, with its approval. Written by
   the workflow; approve or stop items with the `approve` checkbox on each note.
 - **`star-triage.py`**: run `python3 star-triage.py sync`, `doctor` or `setup` from here
-  (`python` on Windows).
+  (`python` on Windows). `mode` chooses who approves installs (manual, auto, auto-plus);
+  `pause`, `resume`, `undo` and `history` control automatic installs on this computer.
 
 The workflow in `.github/workflows/` runs every 3 hours and calls the star-triage Action.
 Problems and fixes: https://github.com/thebeekeper/star-triage/blob/main/docs/TROUBLESHOOTING.md

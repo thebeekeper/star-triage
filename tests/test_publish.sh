@@ -37,6 +37,16 @@ fresh; note d; approve x/d True Low; AUTO_MERGE=low-risk publish;    expect "low
 fresh; note e; approve x/e True Medium; AUTO_MERGE=low-risk publish; expect "low-risk: Medium approval waits" WAITS; cleanup
 fresh; note f; AUTO_MERGE=never publish;                        expect "never: always waits" WAITS; cleanup
 
+# The same decisions by mode name (5.2): manual, auto (Low), auto-plus (Low and Medium). High never merges.
+fresh; note m1; AUTO_MERGE=manual publish;                               expect "manual: notes only merges" MERGED; cleanup
+fresh; note m2; approve x/m2 True Low; AUTO_MERGE=manual publish;        expect "manual: Low approval waits" WAITS; cleanup
+fresh; note m3; approve x/m3 True Low; AUTO_MERGE=auto publish;          expect "auto: Low approval merges" MERGED; cleanup
+fresh; note m4; approve x/m4 True Medium; AUTO_MERGE=auto publish;       expect "auto: Medium approval waits" WAITS; cleanup
+fresh; note m5; approve x/m5 True Medium; AUTO_MERGE=auto-plus publish;  expect "auto-plus: Medium approval merges" MERGED; cleanup
+fresh; note m6; approve x/m6 True Low; approve x/m7 True Medium; AUTO_MERGE=auto-plus publish; expect "auto-plus: Low and Medium together merge" MERGED; cleanup
+fresh; note m8; approve x/m8 True High; AUTO_MERGE=auto-plus publish;    expect "auto-plus: High approval waits" WAITS; cleanup
+fresh; note m9; approve x/m9 True Low; approve x/m10 True High; AUTO_MERGE=auto publish; expect "auto: one High among Low waits" WAITS; cleanup
+
 # Rolling PR: a PR that waits, then main moves on, then a new run adds to the same PR.
 fresh; note g; approve x/g True Medium; AUTO_MERGE=notes publish; B=$(git branch --show-current); cd ..
 cd seed; git pull -q; echo "# edited" > tracker/old.md; git commit -qam "user edit"; git push -q; cd ..
@@ -77,4 +87,6 @@ cleanup
 "$PY" "$ENGINE/tests/test_approval_gates.py" || fail=1
 # Offline checks that one bad repo or one bad note does not stop a run.
 "$PY" "$ENGINE/tests/test_ci_resilience.py" || fail=1
+# Offline auto mode checks: the mode mapping, the safety delay, the daily limit, pause, undo, history.
+"$PY" "$ENGINE/tests/test_auto_mode.py" || fail=1
 exit $fail

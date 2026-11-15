@@ -14,9 +14,9 @@ in your own GitHub Actions. Within a few hours of a new star it:
    package version that is checked to really come from that repo.
 
 Approved installs then happen **on your computer by themselves**: when Claude Code starts, a
-quick background check installs anything new. You approve by merging the review PR (or let
-low-risk ones merge themselves), or by ticking the `approve` box on any note in Obsidian.
-Untick it and it is removed again.
+quick background check installs anything new. You approve by merging the review PR, or by
+ticking the `approve` box on any note in Obsidian. Untick it and it is removed again. Or turn
+on [auto mode](#auto-mode-in-10-seconds) and safe items approve themselves.
 
 Each note answers the questions you actually have:
 
@@ -91,6 +91,37 @@ Check your setup at any time with `python3 star-triage.py doctor` in your data r
 `/star-triage:setup` in Claude Code. Problems people have hit are in
 [Troubleshooting](https://github.com/thebeekeper/star-triage/blob/main/docs/TROUBLESHOOTING.md).
 
+## Auto mode in 10 seconds
+
+One setting decides who approves installs:
+
+| Mode | In plain words |
+| --- | --- |
+| `manual` | I approve every install (the default) |
+| `auto` | Install safe things by themselves (Low risk only) |
+| `auto-plus` | Install safe and medium-risk things by themselves (Low and Medium) |
+
+High-risk and blocked items are **never** installed automatically, in any mode.
+
+```
+python3 star-triage.py mode
+```
+
+shows the current mode and a 1/2/3 menu. `python3 star-triage.py mode auto` switches without
+the menu. In Claude Code, say "turn on auto mode" or run `/star-triage:mode`. All three change
+`mode` in `config.yml`, commit and push.
+
+In `auto` and `auto-plus`, an item installs only after a 6-hour safety delay from its review
+(`auto_wait_hours`), and at most 5 install per day (`auto_daily_limit`). That delay is your
+chance to stop one: untick `approve` on its note, or pause.
+
+- `python3 star-triage.py pause` stops everything automatic on this computer; `resume` starts
+  it again. Works in every mode.
+- `python3 star-triage.py undo` removes everything the last automatic batch installed and
+  unticks those notes. It asks first.
+- `python3 star-triage.py history` lists the last 20 automatic installs and removals, with the
+  reason for each.
+
 ### How it fits together
 
 - **This repo is the engine:** a GitHub Action (the cloud side) and a Claude Code plugin (the
@@ -133,8 +164,8 @@ After setup it runs by itself every 3 hours. Your part:
 - **Approve installs.** A run that approves an install opens a pull request and waits for you.
   Read the notes (the *Install plan* and *Security scan* sections say exactly what would be
   installed and why), then merge. Until you do, later runs add to that same PR. Want it fully
-  hands-off? Set `auto_merge: low-risk` in `config.yml` and installs rated Low risk approve
-  themselves too.
+  hands-off? Switch to auto mode (`python3 star-triage.py mode auto`) and installs rated Low
+  risk approve themselves.
 - **Or approve in Obsidian.** Every installable note has an `approve` checkbox. Tick it to
   install something Claude rated Try or Optional; untick it to remove something. The
   **Installs** view in `tracker/Star Triage.base` lists them all.
@@ -190,8 +221,12 @@ that code, so it is locked down in layers:
 - **Your keys stay yours.** An MCP server that needs an API key is never configured with one
   automatically; you get the exact command to add it with your key.
 - **You stay in control.** A PR that approves installs waits for your merge (unless you chose
-  `low-risk`), every item has an `approve` checkbox, sync never passes `--yes`, and every action
-  is logged to `.star-triage/sync.log`.
+  `auto` or `auto-plus`), every item has an `approve` checkbox, sync never passes `--yes`, and
+  every action is logged to `.star-triage/sync.log`.
+- **Auto mode has brakes.** The default is `manual`. In `auto` and `auto-plus` an item waits
+  6 hours after its review before it installs, at most 5 install per day, High-risk and
+  blocked items never install by themselves, `pause` stops everything on a computer, `undo`
+  removes the last batch, and `history` shows what happened and why.
 
 No setup is perfectly safe against a determined attacker, and an approved tool runs with your
 permissions. Read the PR before merging, especially the Install plan and Security scan sections.
@@ -245,14 +280,15 @@ Do the steps you need, in this order. Run the commands in your data repo's folde
 | Path | What it does |
 | --- | --- |
 | `action.yml` | The GitHub Action your data repo's workflow calls |
-| `.claude-plugin/`, `hooks/`, `skills/` | The Claude Code plugin: marketplace, startup hook, `/star-triage:setup`, `:sync`, `:triage` |
+| `.claude-plugin/`, `hooks/`, `skills/` | The Claude Code plugin: marketplace, startup hook, `/star-triage:setup`, `:sync`, `:mode`, `:triage` |
 | `prompts/triage.md` | The instructions Claude follows |
 | `scripts/export_stars.py`, `select_new.py`, `clone_new.py` | Find new stars and clone them safely |
 | `scripts/scan_repo.py` | The plain-code security scanner |
 | `scripts/apply_scan.py`, `validate_notes.py` | Merge the scan into notes, enforce the risk floor, check every note |
 | `scripts/queue_installs.py` | Work out each install (plugin, skill, MCP, CLI), check and pin it, approve or block it |
 | `scripts/publish.py` | Open the review PR (or add to the open one) and merge it when allowed |
-| `scripts/sync.py` | Install, update and remove approved items on your computer |
+| `scripts/sync.py` | Install, update and remove approved items on your computer; pause, resume, undo, history |
+| `scripts/mode.py` | Show or switch the mode (manual, auto, auto-plus) |
 | `scripts/setup.py`, `doctor.py` | Guided setup and migration, and a check that says what is wrong and how to fix it |
 | `scripts/paths.py` | Finds the engine and your data repo |
 | `template/` | The skeleton of a new data repo |
@@ -266,7 +302,7 @@ Do the steps you need, in this order. Run the commands in your data repo's folde
 | `tracker/` | Your notes, the Obsidian base and a note template |
 | `installs.json` | Every reviewed install, pinned, with its approval (written by the workflow) |
 | `.claude-plugin/marketplace.json` | Reviewed plugins, pinned, for Claude Code's plugin installer |
-| `star-triage.py` | `python3 star-triage.py sync`, `doctor` or `setup` |
+| `star-triage.py` | `python3 star-triage.py sync`, `mode`, `pause`, `resume`, `undo`, `history`, `doctor` or `setup` |
 | `.github/workflows/star-triage.yml` | Runs every 3 hours and calls the Action |
 
 ## FAQ

@@ -10,7 +10,7 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
 - **This repo is the engine.** One copy of the code, used two ways:
   - `action.yml`: composite GitHub Action that a user's data repo calls as `thebeekeper/star-triage@v1`.
   - Claude Code plugin (repo root = plugin root): `.claude-plugin/plugin.json` + `marketplace.json`
-    (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`), `skills/setup|sync|triage`.
+    (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`), `skills/setup|sync|mode|triage`.
 - **User data repo** (skeleton in `template/`): `config.yml`, `tracker/` notes, `installs.json`,
   `.claude-plugin/marketplace.json` (their reviewed plugins), `star-triage.py` launcher, tiny workflow.
 - `scripts/paths.py` finds the data repo: `STAR_TRIAGE_DATA` → cwd → engine dir (old layout) →
@@ -27,8 +27,11 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
   Prepare changes; let him commit unless he explicitly asks you to.
 - **Never ask for, read, print or store tokens or API keys.** Secrets go through `setup.py` in
   his own terminal (`claude setup-token` → `gh secret set` hidden prompt).
-- **Keep the approval gates.** Default `auto_merge: notes`; installs need a merge or an
-  `approve` tick; blocked items need a typed `install`; sync never passes `--yes`.
+- **Keep the approval gates.** Default `mode: manual`; installs need a merge or an
+  `approve` tick; blocked items need a typed `install`; sync never passes `--yes`. Auto modes
+  (`auto`, `auto-plus`) are opt-in, never cover High-risk or blocked items, and keep the safety
+  delay, the daily limit, pause, undo and history. `paths.read_mode` is the only place the
+  setting (and the older `auto_merge`) is read.
 - **Claude proposes, code decides.** Anything security-relevant (risk floor, install specs,
   registry checks, validation) is decided by plain code from the trusted scan copy, never from
   text Claude wrote.
@@ -45,6 +48,7 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
 ```
 python -m pyflakes scripts/*.py template/star-triage.py
 bash tests/test_publish.sh
+python tests/test_auto_mode.py              # also run by test_publish.sh
 python tests/test_install_plans.py          # network
 claude plugin validate .
 actionlint template/.github/workflows/star-triage.yml

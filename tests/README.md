@@ -4,10 +4,11 @@ Run from the repo root:
 
 | Command | What it checks | Needs |
 |---|---|---|
-| `bash tests/test_publish.sh` | publish.py: every `auto_merge` mode, the rolling review PR, the no-permission error, changed pins on approved items, merge tied to the pushed commit | git, Python |
+| `bash tests/test_publish.sh` | publish.py: every mode (manual, auto, auto-plus) and the older `auto_merge` names, the rolling review PR, the no-permission error, changed pins on approved items, merge tied to the pushed commit | git, Python |
 | `python tests/test_approval_gates.py` | `approve` written by the reviewer never approves an install; setup commands outside the package's own names (`python3.12`, `bash.exe`, `/bin/sh`) are rejected. Also run at the end of `test_publish.sh` | Python (temp dir only) |
 | `python tests/test_ci_resilience.py` | a malformed `package.json`, `.mcp.json` or `marketplace.json` does not crash the scan; a repo that cannot be scanned gets a High floor; one bad note is set aside and the good ones go on. Also run at the end of `test_publish.sh` | git, Python (temp dir only) |
 | `python tests/test_sync_safety.py` | sync.py: the hook ignores the current folder; skill names and tar members cannot leave the skills folder | Python (temp dir only) |
+| `python tests/test_auto_mode.py` | auto mode: one mapping from `mode`/`auto_merge`; the background sync respects the safety delay, the daily limit and pause, and never installs High-risk or blocked items; a downgrade is removed and logged; `undo` removes the last batch only; the start message; `mode` edits, commits and pushes config.yml. Also run at the end of `test_publish.sh` | git, Python (temp dir only, installers replaced by a stand-in) |
 | `python tests/test_install_plans.py` | scan → apply → validate → queue_installs on real repos; every install kind; look-alike packages, fake URLs, unsafe args and setup commands rejected | network (GitHub, npm, PyPI) |
 | `claude plugin validate .` | the plugin and marketplace manifests | Claude Code |
 | `actionlint template/.github/workflows/star-triage.yml` | the data repo's workflow | actionlint |

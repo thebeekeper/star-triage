@@ -4,6 +4,10 @@
 
     sync      install, update or remove what you approved
               (--dry-run, --status, --uninstall NAME, --prune)
+    mode      who approves installs: manual, auto or auto-plus (no word = show a menu)
+    pause     stop everything automatic on this computer;  resume  starts it again
+    undo      remove the most recent automatic batch and untick its notes
+    history   the last 20 automatic installs and removals
     doctor    check your setup and say how to fix anything wrong
     setup     guided setup (safe to run again)
 
@@ -22,7 +26,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-COMMANDS = {"sync": "sync.py", "doctor": "doctor.py", "setup": "setup.py"}
+# command -> (script in the plugin, arguments put in front of yours)
+COMMANDS = {"sync": ("sync.py", []), "doctor": ("doctor.py", []), "setup": ("setup.py", []),
+            "mode": ("mode.py", []), "pause": ("sync.py", ["--pause"]), "resume": ("sync.py", ["--resume"]),
+            "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"])}
 
 
 def is_engine(path: Path) -> bool:
@@ -60,9 +67,15 @@ def main() -> int:
               "  /plugin install star-triage@star-triage\n"
               "then start Claude Code once and try again.")
         return 1
-    script = engine / "scripts" / COMMANDS[sys.argv[1]]
+    name, front = COMMANDS[sys.argv[1]]
+    script = engine / "scripts" / name
+    if not script.exists():
+        print("Your star-triage plugin is older than this command. Update it, in a terminal:\n"
+              "  claude plugin marketplace update star-triage\n"
+              "  claude plugin update star-triage@star-triage")
+        return 1
     env = dict(os.environ, STAR_TRIAGE_DATA=str(HERE))
-    return subprocess.call([sys.executable, str(script), *sys.argv[2:]], cwd=HERE, env=env)
+    return subprocess.call([sys.executable, str(script), *front, *sys.argv[2:]], cwd=HERE, env=env)
 
 
 if __name__ == "__main__":

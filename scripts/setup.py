@@ -37,8 +37,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
 from doctor import CONFIG_PATH, ROOT, WORKFLOW_FILE, find_claude, gh_json, gh_ready, run  # noqa: E402
-from paths import (DEFAULT_MAX_PER_RUN, ENGINE_DIR, TROUBLESHOOTING_URL, auto_merge_mode,  # noqa: E402
-                   is_data_repo, running_as_plugin, safe_console, write_link)
+from mode import set_mode_text  # noqa: E402
+from paths import (DEFAULT_MAX_PER_RUN, ENGINE_DIR, MODES, TROUBLESHOOTING_URL, is_data_repo,  # noqa: E402
+                   read_mode, running_as_plugin, safe_console, write_link)
 
 TEMPLATE_DIR = ENGINE_DIR / "template"
 # Files a v4 copy carried itself; the Action and the plugin provide them now.
@@ -189,19 +190,18 @@ def configure(gh_login: str | None, owner: str) -> bool:
     if mpr.isdigit() and 1 <= int(mpr) <= 25:
         text = set_setting(text, "max_per_run", [f"max_per_run: {int(mpr)}"])
 
-    say("\nHow hands-off should it be? Merging a review PR approves its installs, which then")
-    say("happen on your computer by themselves.")
-    say("  1) notes:    PRs with only notes merge themselves; installs wait for your merge (default)")
-    say("  2) low-risk: also merge PRs whose new installs are all Low risk (fully automatic)")
-    say("  3) never:    every PR waits for you")
-    current = auto_merge_mode(cfg)
-    pick = ask("Choose 1, 2 or 3", {"notes": "1", "low-risk": "2", "never": "3"}[current])
-    mode = {"1": "notes", "2": "low-risk", "3": "never"}.get(pick, current)
-    lines = [f"auto_merge: {mode}"]
-    if "auto_merge" not in cfg:
-        lines = ["# Should review PRs merge themselves? notes = only notes-only PRs, low-risk = also",
-                 "# PRs whose new installs are all Low risk, never = always wait for you."] + lines
-    text = set_setting(text, "auto_merge", lines, before="about_me")
+    say("\nWho approves installs? (Change it later with: python star-triage.py mode)")
+    names = list(MODES)
+    for n, name in enumerate(names, 1):
+        say(f"  {n}) {name + ':':11}{MODES[name]}")
+    say("High-risk and blocked items are never installed automatically, in any mode.")
+    current = read_mode(cfg)
+    pick = ask("Choose 1, 2 or 3", str(names.index(current) + 1))
+    chosen = names[int(pick) - 1] if pick in ("1", "2", "3") else current
+    # Written only when it is a real choice: keeping the current mode never rewrites an old
+    # config that still uses auto_merge.
+    if chosen != current or "mode" in cfg:
+        text = set_mode_text(text, chosen)
 
     if text == original:
         say("\nconfig.yml unchanged.")
@@ -602,6 +602,11 @@ def main() -> None:
     if not repo:
         sys.exit("Your data repo has no GitHub remote. Push it to GitHub first (git remote add origin ...).")
     say(f"Data repo: {ROOT}  ({repo})")
+
+    launcher, shipped = ROOT / "star-triage.py", TEMPLATE_DIR / "star-triage.py"
+    if launcher.exists() and launcher.read_bytes().replace(b"\r\n", b"\n") != shipped.read_bytes().replace(b"\r\n", b"\n"):
+        if yes("star-triage.py in your data repo is older than the plugin (it lacks the newer commands). Update it?"):
+            launcher.write_bytes(shipped.read_bytes())
 
     step(2, "Your settings (config.yml)")
     if "--skip-config" in args:

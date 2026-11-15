@@ -16,7 +16,7 @@ import sys
 
 from common import (TRACKER_DIR, WORK_DIR, load_config, normalize_url, note_filename,
                     read_frontmatter, set_output, tracked_urls, write_summary)
-from paths import auto_merge_mode
+from paths import merge_policy
 
 KEEP_ON_RETRIAGE = ("status", "source", "added", "approve")
 
@@ -111,7 +111,7 @@ def main() -> None:
     set_output("max_turns", str(40 + 25 * len(batch)))
     set_output("waiting", str(max(0, len(new) - (len(batch) - len(again)))))
     set_output("model", model)
-    set_output("auto_merge", auto_merge_mode(cfg))
+    set_output("auto_merge", merge_policy(cfg))  # the mode; publish.py decides from it
     if not batch:
         write_summary("**No new stars** since the last check. Nothing to triage, no Claude usage.")
 

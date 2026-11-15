@@ -69,7 +69,7 @@ section is written so it can be used as-is in a launch post or README.
   remember, no scheduler to set up, the same on Windows, macOS and Linux.
 - **Approve with a merge or a checkbox.** A run that approves installs opens a pull request and
   waits for you. Or tick `approve` on any note in Obsidian to install it, untick to remove it.
-  Fully hands-off is one setting (`auto_merge: low-risk`): Low-risk installs approve themselves.
+  Fully hands-off is one setting (`mode: auto`): Low-risk installs approve themselves.
 - **Claude proposes, code decides.** Claude only suggests how to install a repo; plain code
   checks every proposal. A package must link back to that exact repo on npm or PyPI (renamed
   and transferred repos are matched by GitHub ID, so typosquats and look-alikes are rejected).
@@ -145,3 +145,34 @@ section is written so it can be used as-is in a launch post or README.
   and can't be installed. A note that fails the checks is left out with a warning and the rest
   are published. If Claude stops early, the notes it finished are still published and the run
   is marked failed.
+
+## 8. Auto mode
+
+- **One setting, three plain choices.** `manual` (I approve every install, the default), `auto`
+  (safe things install by themselves, Low risk only), `auto-plus` (Low and Medium). It replaces
+  the older `auto_merge` key, which is still read: `notes` is manual, `low-risk` is auto, and
+  `mode` wins when both are set. One function reads it for the workflow, setup, the doctor
+  and the sync.
+- **Four ways to change it, one result.** `python3 star-triage.py mode` (a 1/2/3 menu),
+  `mode auto`, the `/star-triage:mode` skill ("turn on auto mode"), and the same question in
+  setup. Each one edits `config.yml`, commits "Switch star-triage to <mode>" and pushes; a
+  failed push prints the commands to run.
+- **Never High, never blocked.** No mode merges a PR that approves a High-risk install, and
+  the background sync never installs a High-risk or blocked item. A blocked item still needs
+  a typed `install`.
+- **A veto window.** In auto modes an item installs only once its review is `auto_wait_hours`
+  old (default 6). That leaves time to untick `approve` on the note from a phone, or to pause.
+  Items that aren't due wait for a later Claude Code start.
+- **A daily cap.** At most `auto_daily_limit` items (default 5) install per day on one
+  computer, so a burst of stars or a bad day at a registry can't install a pile at once.
+- **Pause.** `pause` puts a flag file in `.star-triage/`; nothing is installed or removed
+  automatically on that computer until `resume`. It works in every mode and needs no network.
+- **Undo.** `undo` removes everything the most recent automatic batch installed and unticks
+  those notes so they stay removed. It asks y/n first.
+- **History.** Every automatic install and removal is one line in `.star-triage/history.jsonl`
+  with the date, the item and the reason. `history` shows the last 20. A removal caused by a
+  later review is recorded as "removed: downgraded by re-review".
+- **One line at startup.** In auto modes the Claude Code start message is a single line, for
+  example `star-triage auto: installed context7, ccusage; 1 waiting (6 h safety delay)`.
+- **Nobody is switched silently.** The default stays manual, an existing config keeps its
+  meaning, and setup writes `mode` only when you pick a different one.
