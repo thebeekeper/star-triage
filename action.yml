@@ -170,16 +170,19 @@ runs:
         # The instructions travel with the engine; give Claude a copy inside the workspace.
         cp "$STAR_TRIAGE_ENGINE/prompts/triage.md" .triage/triage-prompt.md
 
-    - name: Record hashes of the trusted copy and .git/config
+    - name: Record hashes of the trusted copy and save .git/config
       if: steps.pick.outputs.count != '0'
       id: seal
       shell: bash
       run: |
-        # One SHA-256 over the hash of every trusted file plus .git/config. It is kept as a
-        # step output, which lives in the runner, not in a file Claude could rewrite.
-        seal() { { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-                   sha256sum .git/config; } | sha256sum | cut -d' ' -f1; }
+        # One SHA-256 over the hash of every trusted file. It is kept as a step output, which
+        # lives in the runner, not in a file Claude could rewrite.
+        seal() { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum \
+                   | sha256sum | cut -d' ' -f1; }
         echo "sum=$(seal)" >> "$GITHUB_OUTPUT"
+        # .git/config is not sealed: claude-code-action rewrites it itself (git user, origin
+        # URL). A clean copy is kept outside the workspace and put back after Claude.
+        cp .git/config "$RUNNER_TEMP/git-config.before"
 
     - name: Triage with Claude (subscription token)
       if: steps.pick.outputs.count != '0' && steps.auth.outputs.mode == 'oauth'
@@ -217,16 +220,26 @@ runs:
           --allowedTools "Read,Glob,Grep,Write,WebSearch,WebFetch"
           --disallowedTools "Bash,Edit,NotebookEdit"
 
-    - name: Check Claude left the trusted copy and .git/config alone
+    - name: Restore .git/config and check Claude left the trusted copy alone
       if: steps.pick.outputs.count != '0'
       shell: bash
       env:
         BEFORE: ${{ steps.seal.outputs.sum }}
       run: |
-        seal() { { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-                   sha256sum .git/config; } | sha256sum | cut -d' ' -f1; }
+        # Put back the clean .git/config, whatever changed it (claude-code-action sets a git
+        # user and an origin URL with a token). Only setting names are logged, never values.
+        if [ -f "$RUNNER_TEMP/git-config.before" ]; then
+          if ! cmp -s .git/config "$RUNNER_TEMP/git-config.before"; then
+            echo "Restoring .git/config. Settings changed during the Claude step:"
+            diff <(git config --file "$RUNNER_TEMP/git-config.before" --list --name-only | sort -u) \
+                 <(git config --file .git/config --list --name-only | sort -u) || true
+          fi
+          cp "$RUNNER_TEMP/git-config.before" .git/config
+        fi
+        seal() { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum \
+                   | sha256sum | cut -d' ' -f1; }
         if [ -z "$BEFORE" ] || [ "$(seal)" != "$BEFORE" ]; then
-          msg="The trusted scan copy or .git/config changed while Claude ran. Nothing was published. Run the workflow again; if it repeats, one of the reviewed repos is probably steering the reviewer."
+          msg="The trusted scan copy changed while Claude ran. Nothing was published. Claude is not allowed to write there, so one of the reviewed repos is probably steering the reviewer. Run the workflow again; if it repeats, tell the star-triage maintainers."
           echo "::error title=Integrity check failed::$msg"
           printf '### Integrity check failed\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
           exit 1

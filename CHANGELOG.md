@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.2.1
+- Fix: every run that reviewed new stars failed with "Integrity check failed". The check
+  hashed `.git/config`, but the Claude step (claude-code-action) changes that file itself
+  when it sets up git. `.git/config` is now saved before Claude and restored right after, and
+  the run logs which settings were changed (names only). The tamper check still covers the
+  trusted scan copy.
+
 ## 5.2.0
 Auto mode. The default is still manual; nobody's mode changes unless they choose it.
 - One setting, `mode`: `manual` (I approve every install), `auto` (safe things install by
