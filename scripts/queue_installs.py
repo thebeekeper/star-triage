@@ -13,9 +13,11 @@ trusted scan copy and from the package registries, never from text Claude wrote:
   cli     a command-line tool from npm / PyPI, same checks and pinning
   none    nothing to install (a library, an app, a pattern...)
 
-An item is APPROVED (installed automatically once the PR is merged) when Claude's
-verdict is Install, the risk is not High, and nothing blocks it. Anything else that
-can be installed is AVAILABLE: tick `approve` on its note in Obsidian to install it.
+An item is APPROVED (installed automatically once the PR is merged) when nothing blocks
+it, the risk is not High, and either Claude's verdict is Install or the mode lets that risk
+install by itself (auto: Low, auto-plus: Low and Medium) and the verdict is not Skip or
+Not now. Anything else that can be installed is AVAILABLE: tick `approve` on its note in
+Obsidian to install it.
 BLOCKED items (high-severity scan findings, binaries, unknown commit) are never
 installed automatically.
 
@@ -36,6 +38,7 @@ import urllib.request
 from pathlib import Path
 
 from common import ROOT, TRUSTED_DIR, WORK_DIR, github_user, load_config, normalize_url, split_note, write_note
+from paths import MODE_RISKS, read_mode
 
 INSTALLS_PATH = ROOT / "installs.json"
 MARKET_PATH = ROOT / ".claude-plugin" / "marketplace.json"
@@ -323,8 +326,15 @@ def load_json_file(path: Path, default):
         return default
 
 
+# Verdicts that mean "don't install this", whatever the mode.
+NOT_WANTED = ("Skip", "Not now")
+
+
 def main() -> None:
     cfg = load_config()
+    # In auto modes, anything within the mode's risk limit installs by itself unless the
+    # review said not to (owner's decision, user test UT-14).
+    auto_risks = MODE_RISKS.get(read_mode(cfg), ())
     batch = json.loads((TRUSTED_DIR / "new.json").read_text(encoding="utf-8"))
     installs = load_json_file(INSTALLS_PATH, {})
     installs.setdefault("about", "Installs reviewed by star-triage. Written by the workflow; "
@@ -369,7 +379,9 @@ def main() -> None:
             entry["status"], entry["problem"] = decision["kind"], decision.get("problem", "")
         elif blockers:
             entry["status"], entry["blocked"] = "blocked", "; ".join(dict.fromkeys(blockers))
-        elif entry["verdict"] == "Install" and entry["risk"] != "High":
+        elif entry["risk"] != "High" and (
+                entry["verdict"] == "Install"
+                or (entry["risk"] in auto_risks and entry["verdict"] not in NOT_WANTED)):
             entry["status"] = "queued"
         else:
             entry["status"] = "available"

@@ -214,8 +214,9 @@ that code, so it is locked down in layers:
   is pinned to a version; a hosted MCP URL must appear in the repo itself; a one-time setup
   command must appear word for word in the README and can't be a shell, `curl`, `sudo` or
   an interpreter; arguments are plain words only.
-- **Strict approval.** Approved automatically only when the verdict is Install, the risk is not
-  High and nothing blocks it. High-severity findings or bundled binaries block an item: it is
+- **Strict approval.** Approved automatically only when nothing blocks it, the risk is not
+  High, and either the verdict is Install or your mode covers that risk (`auto`: Low,
+  `auto-plus`: Low and Medium) and the verdict isn't Skip or Not now. High-severity findings or bundled binaries block an item: it is
   never installed in the background, and installing it by hand means typing `install` to
   confirm.
 - **Your keys stay yours.** An MCP server that needs an API key is never configured with one
@@ -322,6 +323,10 @@ that same PR, and repos already waiting in it are not reviewed again.
 
 **What can't it install?** Libraries you add to a project, apps, Docker images and tools
 with custom installers (`curl ... | sh`). Their notes say "install by hand" with the command.
+
+**Why is something waiting for me?** In `manual` mode only Install verdicts are approved when
+you merge. In `auto` modes, anything above your mode's risk limit, or with the verdict Skip or
+Not now, waits. `python star-triage.py sync` lists what waits and which note to tick.
 
 **Why wasn't something with an Install verdict approved?** The PR and the note's Install plan
 say why: usually a high-risk scan finding, bundled binaries, a package that doesn't link back

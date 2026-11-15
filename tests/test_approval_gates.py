@@ -5,6 +5,8 @@
          a re-review keeps only the owner's earlier tick (from the trusted new.json).
   SEC-4  a setup command must be one of the package's own command names: python3.12,
          bash.exe and /bin/sh are rejected.
+  UT-14  auto modes approve anything within their risk limit unless the verdict is Skip or
+         Not now; manual mode approves Install verdicts only; High is never approved.
 """
 import json
 import os
@@ -25,7 +27,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     failed = failed or not ok
 
 
-def run_case(root: Path, item_extra: dict) -> tuple[str, dict]:
+def run_case(root: Path, item_extra: dict, verdict: str = "Skip", risk: str = "Low",
+             mode: str = "") -> tuple[str, dict]:
     """Claude 'writes' a note with approve: true for a repo whose verdict is not Install.
     Returns the note text and its installs.json entry after apply_scan + queue_installs."""
     shutil.rmtree(root, ignore_errors=True)
@@ -34,8 +37,14 @@ def run_case(root: Path, item_extra: dict) -> tuple[str, dict]:
     (root / ".triage" / "proposals").mkdir(parents=True)
     (trusted / "scan").mkdir(parents=True)
     shutil.copy(ENGINE / "template" / "config.yml", root / "config.yml")
+    if mode:
+        cfg = (root / "config.yml").read_text(encoding="utf-8")
+        import re
+        cfg = re.sub(r"(?m)^mode:.*$", f"mode: {mode}", cfg) if re.search(r"(?m)^mode:", cfg) \
+            else f"mode: {mode}\n" + cfg
+        (root / "config.yml").write_text(cfg, encoding="utf-8")
     (root / "tracker" / "o__r.md").write_text(
-        '---\nrepo: "https://github.com/o/r"\nverdict: "Skip"\nrisk: "Low"\nsummary: "x"\n'
+        f'---\nrepo: "https://github.com/o/r"\nverdict: "{verdict}"\nrisk: "{risk}"\nsummary: "x"\n'
         'approve: true\nauto_install: "queued"\nsneaky: "yes"\n---\n\n# r\n\n## Install\n\nnone\n', encoding="utf-8")
     (root / ".triage" / "proposals" / "o__r.json").write_text('{"kind": "skill"}', encoding="utf-8")
     item = {"repo": "o/r", "url": "https://github.com/o/r", "note_path": "tracker/o__r.md", **item_extra}
@@ -68,6 +77,18 @@ def main() -> None:
 
         note, entry = run_case(tmp / "kept", {"retriage": True, "previous": {"approve": True}})
         check("SEC-3 re-review, owner had ticked: their tick is kept", "approve: true" in note, note[:300])
+
+        cases = [  # (verdict, risk, mode, approved?)
+            ("Try", "Medium", "auto-plus", True), ("When needed", "Low", "auto", True),
+            ("Try", "Medium", "auto", False), ("Try", "Low", "manual", False),
+            ("Install", "Medium", "manual", True), ("Skip", "Low", "auto-plus", False),
+            ("Not now", "Low", "auto-plus", False), ("Install", "High", "auto-plus", False),
+            ("Try", "High", "auto-plus", False)]
+        for i, (verdict, risk, mode, want) in enumerate(cases):
+            _, entry = run_case(tmp / f"m{i}", {}, verdict, risk, mode)
+            check(f"UT-14 {verdict}/{risk} in {mode}: {'approved' if want else 'waits'}",
+                  entry["approved"] is want and entry["status"] == ("queued" if want else "available"),
+                  str(entry))
 
         os.environ["STAR_TRIAGE_DATA"] = str(tmp / "new")
         sys.path.insert(0, str(SCRIPTS))

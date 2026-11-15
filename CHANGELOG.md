@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.3.0
+- Auto modes now install anything within their risk limit (`auto`: Low, `auto-plus`: Low and
+  Medium), whatever the verdict, unless the review says Skip or Not now. Before, only Install
+  verdicts were ever approved, so a new user often got nothing installed. `manual` is
+  unchanged. High-risk and blocked items still never install by themselves.
+- Sync no longer says "approve installs by merging a review PR" when the PR is already merged.
+  It lists each item that waits, with its verdict and risk, and the note to tick.
+
 ## 5.2.1
 - Fix: every run that reviewed new stars failed with "Integrity check failed". The check
   hashed `.git/config`, but the Claude step (claude-code-action) changes that file itself

@@ -157,6 +157,11 @@ section is written so it can be used as-is in a launch post or README.
   `mode auto`, the `/star-triage:mode` skill ("turn on auto mode"), and the same question in
   setup. Each one edits `config.yml`, commits "Switch star-triage to <mode>" and pushes; a
   failed push prints the commands to run.
+- **Auto modes approve by risk, not only by verdict (5.3.0).** In `auto` and `auto-plus`,
+  anything installable within the mode's risk limit is approved, whatever the verdict, unless
+  the verdict is Skip or Not now. Before, only Install verdicts were ever approved, and a new
+  user with no `about_me` got no Install verdicts, so nothing installed by itself (user test
+  UT-14). `manual` keeps the old rule: merging approves Install verdicts only.
 - **Never High, never blocked.** No mode merges a PR that approves a High-risk install, and
   the background sync never installs a High-risk or blocked item. A blocked item still needs
   a typed `install`.

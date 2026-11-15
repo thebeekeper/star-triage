@@ -916,8 +916,18 @@ def main() -> int:
             steps, _, _, high = hold_back(steps, wait_h, limit, history_read())
         if not steps:
             if not background:
-                print("Everything you approved is installed." if wanted(items) else
-                      "Nothing approved yet. Approve installs by merging a review PR, or tick `approve` on a note.")
+                if wanted(items):
+                    print("Everything you approved is installed.")
+                else:
+                    waiting = [(k, it) for k, it in sorted(items.items()) if it.get("status") == "available"]
+                    if waiting:
+                        # Say why each one waits, instead of asking for a merge already done (UT-14).
+                        print("Nothing is approved to install yet. These wait for you:")
+                        for key, it in waiting:
+                            print(f"  {key}: verdict {it.get('verdict') or '?'}, risk {it.get('risk') or '?'}."
+                                  f" To install it, tick `approve` in {it.get('note') or 'its note'}.")
+                    else:
+                        print("Nothing to install yet. Reviews that find something installable show up here.")
                 if not hook_installed():
                     print("Tip: run `python star-triage.py sync --install-hook` to have this happen automatically.")
             return 0
