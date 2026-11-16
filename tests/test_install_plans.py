@@ -98,5 +98,12 @@ for bad in ("evil/typosquat", "evil/badurl", "evil/inject", "evil/setup"):
     ok = bad not in items
     fail |= not ok
     print(f"{'ok  ' if ok else 'FAIL'} {bad} rejected")
+# A PyPI package's commands come from its wheel: graphifyy installs `graphify` (5.6.0).
+os.environ["STAR_TRIAGE_DATA"] = str(W); sys.path.insert(0, str(ENGINE/"scripts"))
+import queue_installs
+ok = queue_installs.console_scripts("[console_scripts]\ngraphify = graphify.__main__:main\nbad/x = a:b\n"
+                                    "[gui_scripts]\ngui = a:b\n") == ["graphify"]
+fail |= not ok
+print(f"{'ok  ' if ok else 'FAIL'} PyPI commands are read from [console_scripts] only")
 shutil.rmtree(W.parent, ignore_errors=True)
 sys.exit(fail)

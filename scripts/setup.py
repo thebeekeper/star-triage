@@ -14,12 +14,14 @@ Without questions (the /star-triage:setup skill runs it like this, from Claude C
     ... --new-repo NAME [--folder PARENT]   create a new data repo (default folder: ~/Documents)
     ... --repo OWNER/NAME [--folder PARENT] use an existing one (cloned first if it isn't here)
     ... --mode manual|auto|auto-plus  --max N  --obsidian | --no-obsidian  --no-auto-update
+    ... --check-every 1|3|6|12|24   how often GitHub checks for new stars (the workflow's cron)
+    ... --install-wait 0|1|6|24     auto modes: hours before a reviewed tool installs (0 = no wait)
     Without --yes it only prints the plan and changes nothing; with --yes it carries it out.
     The token is never part of this: setup then prints the one `token` command to run in your
     own terminal, because the token must never pass through Claude.
 
-How it works: a few questions first (which repo, your projects, the star-triage mode, how the
-workflow uses Claude), then ONE plan and one "Go ahead?". Then it runs straight through:
+How it works: a few questions first (which repo, your projects, the star-triage mode, how often
+to check for new stars, how long installs wait, how the workflow uses Claude), then ONE plan and one "Go ahead?". Then it runs straight through:
   1. Creates your data repo (a private GitHub repo with config.yml, tracker/, a launcher and a
      20-line workflow that calls the star-triage Action), on branch main, and pushes it.
      An existing data repo is used only after you confirm the repo and the GitHub account.
@@ -48,12 +50,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
+import schedule as sched  # noqa: E402
 from doctor import (CONFIG_PATH, ROOT, WORKFLOW_FILE, actions_hint, find_claude, gh_json,  # noqa: E402
                     gh_ready, run, workflow_registered)
 from mode import set_mode_text  # noqa: E402
 from paths import (AUTO_PLUS_SENTENCE, DEFAULT_MAX_PER_RUN, ENGINE_DIR, MODES, TROUBLESHOOTING_URL,  # noqa: E402
-                   config_on, is_data_repo, launcher_command, linked_data_root, read_mode, read_simple_config,
-                   running_as_plugin, safe_console, write_link)
+                   config_on, is_data_repo, launcher_command, linked_data_root, merge_policy, merge_rule,
+                   parse_simple_config, read_mode, read_simple_config, running_as_plugin, safe_console,
+                   wait_hours, write_link)
 
 TEMPLATE_DIR = ENGINE_DIR / "template"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_FILE}"
@@ -77,7 +81,7 @@ def flag_value(name: str, argv: list[str] | None = None) -> str | None:
 
 
 # Answers given as flags (the /star-triage:setup skill): setup then never asks anything.
-VALUE_FLAGS = ("--mode", "--max", "--repo", "--new-repo", "--folder")
+VALUE_FLAGS = ("--mode", "--max", "--repo", "--new-repo", "--folder", "--check-every", "--install-wait")
 SWITCH_FLAGS = ("--yes", "--obsidian", "--no-obsidian", "--no-auto-update")
 NONINTERACTIVE = any(flag_value(f) is not None for f in VALUE_FLAGS) or bool(set(SWITCH_FLAGS) & set(sys.argv[1:]))
 GO = "--yes" in sys.argv[1:]  # the plan was shown and approved (in the chat)
@@ -221,8 +225,10 @@ def user_change_warning(current: str, new: str, owner: str) -> str | None:
     return None
 
 
-def ask_config(text: str, cfg: dict, gh_login: str | None, owner: str, existing: bool) -> str:
-    """Ask the config questions and return config.yml's new text (nothing is written here)."""
+def ask_config(text: str, cfg: dict, gh_login: str | None, owner: str, existing: bool,
+               current_check: int | None = None) -> str:
+    """Ask the config questions and return config.yml's new text (nothing is written here).
+    current_check: how often the repo's workflow checks now (its cron), if known."""
     say("Press Enter to keep the value in [brackets].")
 
     current_user = cfg.get("github_user") or ""
@@ -276,12 +282,36 @@ def ask_config(text: str, cfg: dict, gh_login: str | None, owner: str, existing:
     if chosen != current or "mode" in cfg:
         text = set_mode_text(text, chosen)
 
+    now = current_check or sched.number_in(text, "check_every_hours") or sched.RECOMMENDED_CHECK
+    hours = ask_choice(sched.CHECK_QUESTION + " (Change it later with: python star-triage.py schedule)",
+                       sched.CHECK_CHOICES, now, sched.RECOMMENDED_CHECK)
+    if hours != now:
+        text = sched.set_check_text(text, hours)
+    if chosen != "manual":
+        now = wait_hours(cfg)
+        wait = ask_choice(sched.WAIT_QUESTION + " (Time to untick it or pause first.)",
+                          sched.WAIT_CHOICES, now, sched.RECOMMENDED_WAIT)
+        if wait != now:
+            text = sched.set_wait_text(text, wait)
+
     uses = config_on(cfg, "obsidian")
     obsidian = yes("\nDo you read your notes in Obsidian? (No: use `python star-triage.py list` instead)",
                    default=uses)
     if obsidian != uses or "obsidian" in cfg:
         text = set_flag_setting(text, "obsidian", obsidian)
     return text
+
+
+def ask_choice(question: str, choices: dict[int, str], current: int, recommended: int) -> int:
+    """A numbered menu; Enter keeps `current`."""
+    say(f"\n{question}")
+    keys = list(choices)
+    for n, value in enumerate(keys, 1):
+        tags = [t for t, on in (("recommended", value == recommended), ("current", value == current)) if on]
+        say(f"  {n}) {choices[value]}" + (f"  ({', '.join(tags)})" if tags else ""))
+    default = str(keys.index(current) + 1) if current in keys else ""
+    pick = ask(f"Choose 1 to {len(keys)}", default)
+    return keys[int(pick) - 1] if pick.isdigit() and 1 <= int(pick) <= len(keys) else current
 
 
 # Setup shows the recommended mode first (mode.py keeps the MODES order).
@@ -320,6 +350,11 @@ def flag_problems(argv: list[str] | None = None) -> list[str]:
         out.append("give --repo (an existing data repo) or --new-repo (a new one), not both")
     if {"--obsidian", "--no-obsidian"} <= set(argv):
         out.append("give --obsidian or --no-obsidian, not both")
+    check, wait = flag_value("--check-every", argv), flag_value("--install-wait", argv)
+    if check is not None and not (check.isdigit() and int(check) in sched.CHECK_CHOICES):
+        out.append("--check-every must be 1, 3, 6, 12 or 24 (hours)")
+    if wait is not None and not sched.wait_ok(wait):
+        out.append("--install-wait must be a whole number of hours from 0 to 168 (0 = no wait)")
     if "--step-by-step" in argv:
         out.append("--step-by-step asks questions, so it can't be used with answer flags")
     return out
@@ -337,7 +372,49 @@ def config_from_flags(text: str, argv: list[str] | None = None) -> str:
         text = set_flag_setting(text, "obsidian", "--obsidian" in argv)
     if "--no-auto-update" in argv:
         text = set_flag_setting(text, "auto_update", False)
+    check, wait = flag_value("--check-every", argv), flag_value("--install-wait", argv)
+    if check and check.isdigit() and int(check) in sched.CHECK_CHOICES:
+        text = sched.set_check_text(text, int(check))
+    if wait is not None and sched.wait_ok(wait):
+        text = sched.set_wait_text(text, int(wait))
     return text
+
+
+def check_change(original: str, text: str) -> int | None:
+    """The new check interval when this run of setup changes it, else None."""
+    want = sched.number_in(text, "check_every_hours")
+    return want if want in sched.CHECK_CHOICES and want != sched.number_in(original, "check_every_hours") else None
+
+
+def apply_check(path: Path, original: str, text: str) -> None:
+    """Write a changed check interval into the workflow's cron line (committed with config.yml)."""
+    hours = check_change(original, text)
+    if hours and sched.write_cron(path, hours):
+        say(f"Workflow: GitHub now checks for new stars {sched.check_words(hours)} "
+            f"(cron \"{sched.cron_for(hours)}\", UTC).")
+
+
+def per_run_of(text: str) -> int:
+    n = sched.number_in(text, "max_per_run")
+    return n if n and 1 <= n <= 25 else DEFAULT_MAX_PER_RUN
+
+
+def first_run_words(text: str) -> str:
+    """Why the first run is small (UT-21)."""
+    return (f"start the first run (3 repos, so you see results in a few minutes; after that "
+            f"{per_run_of(text)} per run)")
+
+
+def timers_line(text: str, check_hours: int | None = None) -> str:
+    """Both timers in one line for the plan (UT-19)."""
+    cfg = parse_simple_config(text)
+    hours = check_hours or sched.number_in(text, "check_every_hours")
+    mode, wait = read_mode(cfg), wait_hours(cfg)
+    installs = ("you approve every install (manual mode)" if mode == "manual" else
+                f"in {mode} mode a reviewed tool installs by itself "
+                + ("right after its review" if wait == 0 else f"{wait} h after its review"))
+    return (f"timers: GitHub checks for new stars {sched.check_words(hours)}; {installs} "
+            "(change either later: python star-triage.py schedule)")
 
 
 def save_config(path: Path, original: str, text: str) -> bool:
@@ -636,7 +713,16 @@ def token_main() -> int:
         say("No star-triage data repo with a GitHub remote was found. Run /star-triage:setup in Claude")
         say("Code first (or: " + launcher_command("setup") + ").")
         return 1
+    who = (gh_json("api", "user") or {}).get("login") or "unknown"
+    owner = repo.split("/")[0]
     say(f"Stores the Claude credential for {repo} as a GitHub secret.")
+    say(f"  GitHub account: {who} (the GitHub CLI's login, `gh auth status`)")
+    say(f"  Secret goes to: {repo}  (Settings > Secrets and variables > Actions)")
+    if who.lower() != owner.lower():
+        say(f"  Careful: {repo} belongs to {owner}, not {who}.")
+    if not yes("Right account?"):
+        say("Nothing was changed. Switch with `gh auth switch` (or `gh auth login`), then run this again.")
+        return 1
     ok = set_secret(repo, "apikey" if "--api-key" in sys.argv[1:] else "oauth", ask_replace=True)
     if ok:
         say("\nDone. Go back to Claude Code and say so; setup carries on from there.")
@@ -704,13 +790,15 @@ def start_workflow(repo: str, tries: int = 4) -> bool:
 def first_run(repo: str, path: Path | None = None) -> None:
     path = path or ROOT
     try:
-        per_run = int((doctor.load_yaml(path / "config.yml") or {}).get("max_per_run", DEFAULT_MAX_PER_RUN))
-    except Exception:
-        per_run = DEFAULT_MAX_PER_RUN
-    say("Every repo you have starred so far gets reviewed, newest first. After this first run the")
-    say(f"workflow takes {per_run} per run (max_per_run in config.yml), every 3 hours, until it has caught up.")
-    say("Each review is a short Claude session. To go slower, lower max_per_run; to leave repos out,")
-    say("list them under ignore in config.yml. With no stars yet, star a few repos first.")
+        text = (path / "config.yml").read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    cfg, every = parse_simple_config(text), sched.check_words(sched.workflow_hours(path)[0])
+    say("Every repo you have starred so far gets reviewed, newest first. This first run takes 3, so you")
+    say(f"see results in a few minutes; after that {per_run_of(text)} per run (max_per_run in config.yml),")
+    say(f"{every}, until it has caught up. Each review is a short Claude session. To go slower, lower")
+    say("max_per_run; to leave repos out, list them under ignore in config.yml. With no stars yet, star a")
+    say("few repos first.")
     if STEP_BY_STEP and not yes("Start the first run now, with 3 repos?"):
         say(f"Later: {actions_hint(repo)}")
         return
@@ -725,8 +813,9 @@ def first_run(repo: str, path: Path | None = None) -> None:
     say(f"Started. Watch it here (takes about 2 to 5 minutes): {url}")
     say("When it has finished:")
     say("  1. Check the run is green. If it is red, the run page says why and how to fix it.")
-    say(f"  2. Merge the pull request if one is waiting: https://github.com/{repo}/pulls")
-    say("     (whether it waits depends on your star-triage mode).")
+    say(f"  2. The pull request with the notes: https://github.com/{repo}/pulls")
+    rule = merge_rule(cfg)
+    say("     " + (rule if merge_policy(cfg) == "never" else f"In {read_mode(cfg)} mode: {rule[0].lower()}{rule[1:]}"))
     say(f"  3. Get the notes onto this computer: run `git pull` in {path}")
 
 
@@ -738,6 +827,17 @@ def check_default_branch(repo: str, path: Path) -> None:
     if default and mine and default != mine:
         say(f"Note: GitHub's default branch for {repo} is '{default}', but this folder is on '{mine}'.")
         say("The workflow runs on the default branch. Switch with: git switch " + default)
+
+
+def timers() -> None:
+    """Both timers, with their numbers and where each is set (UT-19)."""
+    cfg = read_simple_config(CONFIG_PATH)
+    for line in sched.summary(ROOT, cfg):
+        say(line)
+    problem = sched.mismatch(ROOT, cfg)
+    if problem:
+        say(f"Note: {problem}.")
+    say("Change either: python star-triage.py schedule (or /star-triage:schedule in Claude Code).\n")
 
 
 def automatic_installs() -> None:
@@ -800,8 +900,9 @@ TOKEN_BY_COMMAND = ("then you store your Claude token as a repo secret with one 
                     "terminal (Claude never sees the token)")
 
 
-def new_repo_plan(login: str, name: str, target: Path, auth: str | None) -> list[str]:
-    """auth: 'apikey', 'oauth', or 'command' (the token step is left to `star-triage.py token`)."""
+def new_repo_plan(login: str, name: str, target: Path, auth: str | None, text: str = "") -> list[str]:
+    """auth: 'apikey', 'oauth', or 'command' (the token step is left to `star-triage.py token`).
+    text: config.yml's new text, for the timers line."""
     token = ("store your Anthropic API key as a repo secret (you paste it at a hidden prompt)" if auth == "apikey"
              else TOKEN_BY_COMMAND if auth == "command"
              else "store your Claude token as a repo secret (`claude setup-token`, then you paste it at a "
@@ -811,7 +912,8 @@ def new_repo_plan(login: str, name: str, target: Path, auth: str | None) -> list
             "make sure GitHub Actions is on, and let its workflow open pull requests (repo settings)",
             token,
             ("once the token is stored: " if auth == "command" else "")
-            + "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)"]
+            + "wait until GitHub Actions has registered the workflow, then " + first_run_words(text)] \
+        + ([timers_line(text)] if text else [])
 
 
 def plan_only(lines: list[str]) -> None:
@@ -835,8 +937,8 @@ def make_repo(login: dict, name: str, parent: Path, original: str, text: str) ->
         return None
     start_on_main(target)
     written = copy_template(target)
-    if text != original:
-        save_config(target / "config.yml", original, text)
+    if text != original and save_config(target / "config.yml", original, text):
+        apply_check(target, original, text)
     ensure_email(login, target)
     commit_and_push(target, "Start star-triage", written)
     return target
@@ -857,7 +959,7 @@ def flags_target(login: dict) -> tuple[Path, str] | None:
         original = (TEMPLATE_DIR / "config.yml").read_text(encoding="utf-8")
         text = config_from_flags(original)
         if not GO:
-            plan_only([account] + new_repo_plan(login["login"], new, target, "command"))
+            plan_only([account] + new_repo_plan(login["login"], new, target, "command", text))
         made = make_repo(login, new, parent, original, text)
         return (made, "approved") if made else None
 
@@ -881,7 +983,8 @@ def flags_target(login: dict) -> tuple[Path, str] | None:
                    "apply your answers to config.yml, then commit and push it (if anything changed)",
                    "check the repo's GitHub settings (Actions on, workflow may open pull requests) and fix what is off",
                    "if no Claude token is stored yet: " + TOKEN_BY_COMMAND,
-                   "start the first run (3 repos) if the workflow has never run"])
+                   first_run_words(config_from_flags((TEMPLATE_DIR / "config.yml").read_text(encoding="utf-8")))
+                   + " if the workflow has never run"])
     parent.mkdir(parents=True, exist_ok=True)
     res = run(["gh", "repo", "clone", want, str(target)], cwd=parent, timeout=300)
     if res.returncode or not is_data_repo(target):
@@ -921,7 +1024,7 @@ def create_data_repo(login: dict | None) -> tuple[Path, str | None] | None:
         text = ask_config(original, doctor.load_yaml(TEMPLATE_DIR / "config.yml") or {},
                           login["login"], login["login"], existing=False)
         auth = ask_auth()
-        if not show_plan(new_repo_plan(login["login"], name, target, auth)):
+        if not show_plan(new_repo_plan(login["login"], name, target, auth, text)):
             say("Nothing was changed.")
             return None
 
@@ -1041,10 +1144,14 @@ def manual_steps(repo: str | None) -> None:
 
 
 def existing_plan(repo: str, use_gh: bool, config_changed: bool, launcher_old: bool,
-                  secret: set[str] | None, never_ran: bool, auth: str | None) -> list[str]:
+                  secret: set[str] | None, never_ran: bool, auth: str | None,
+                  text: str = "", check: int | None = None) -> list[str]:
     lines = []
     if launcher_old:
         lines.append("update star-triage.py in your data repo (the plugin has newer commands)")
+    if check:
+        lines.append(f"set the workflow's schedule to check for new stars {sched.check_words(check)} "
+                     "(its cron line), together with config.yml")
     lines.append("commit and push config.yml" if config_changed
                  else "commit and push any starting file or commit GitHub doesn't have yet")
     if not use_gh:
@@ -1061,7 +1168,9 @@ def existing_plan(repo: str, use_gh: bool, config_changed: bool, launcher_old: b
                      + " as a repo secret (you paste it at a hidden prompt)")
     if never_ran:
         lines.append(("once the token is stored: " if auth == "command" and not secret else "")
-                     + "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)")
+                     + "wait until GitHub Actions has registered the workflow, then " + first_run_words(text))
+    if text:
+        lines.append(timers_line(text, check or sched.workflow_hours(ROOT)[0]))
     return lines
 
 
@@ -1161,9 +1270,10 @@ def main() -> None:
     elif not approved and "--skip-config" not in args:
         step(2, "Your settings (config.yml)")
         text = ask_config(original, cfg, login["login"] if login else None, repo.split("/")[0],
-                          existing=not STAGE)
+                          existing=not STAGE, current_check=sched.workflow_hours(ROOT)[0])
         if STEP_BY_STEP:
-            save_config(CONFIG_PATH, original, text)
+            if save_config(CONFIG_PATH, original, text):
+                apply_check(ROOT, original, text)
             original = text = CONFIG_PATH.read_text(encoding="utf-8")
     auth = "command" if NONINTERACTIVE else os.environ.get("STAR_TRIAGE_SETUP_AUTH") or None
     secret = secret_names(repo) if use_gh else None
@@ -1172,7 +1282,8 @@ def main() -> None:
     if use_gh and not secret and not auth and not STEP_BY_STEP:
         auth = ask_auth()
     if not approved and not STEP_BY_STEP:
-        lines = existing_plan(repo, use_gh, text != original, launcher_old, secret, never_ran, auth)
+        lines = existing_plan(repo, use_gh, text != original, launcher_old, secret, never_ran, auth,
+                              text, check_change(original, text))
         if NONINTERACTIVE:
             owner, who = repo.split("/")[0], login["login"]
             account = f"use {repo} in {ROOT}, as GitHub account {who}"
@@ -1188,8 +1299,8 @@ def main() -> None:
     step(3, "Saving and pushing your settings")
     if launcher_old and confirm("star-triage.py in your data repo is older than the plugin. Update it?"):
         launcher.write_bytes(shipped.read_bytes())
-    if text != original:
-        save_config(CONFIG_PATH, original, text)
+    if text != original and save_config(CONFIG_PATH, original, text):
+        apply_check(ROOT, original, text)
     ensure_email(login)
     commit_settings()
 
@@ -1219,7 +1330,8 @@ def main() -> None:
     else:
         manual_steps(repo)
 
-    step(7, "Automatic installs on this computer")
+    step(7, "Timers and automatic installs on this computer")
+    timers()
     automatic_installs()
     plugin_updates()
 

@@ -8,6 +8,8 @@
     approve   owner/name: approve an install, as ticking `approve` in Obsidian does
     unapprove owner/name: untick it again (an installed item is then removed)
     mode      who approves installs: manual, auto or auto-plus (no word = show a menu)
+    schedule  how often GitHub checks for new stars, and how long installs wait
+              (--check-every 1|3|6|12|24, --install-wait 0|1|6|24; no option = show and ask)
     pause     stop everything automatic on this computer;  resume  starts it again
     undo      remove the most recent automatic batch and untick its notes
     history   the last 20 automatic installs and removals
@@ -36,8 +38,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # command -> (script in the plugin, arguments put in front of yours)
 COMMANDS = {"sync": ("sync.py", []), "doctor": ("doctor.py", []), "setup": ("setup.py", []),
-            "mode": ("mode.py", []), "pause": ("sync.py", ["--pause"]), "resume": ("sync.py", ["--resume"]),
-            "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"]),
+            "mode": ("mode.py", []), "schedule": ("schedule.py", []),
+            "pause": ("sync.py", ["--pause"]), "resume": ("sync.py", ["--resume"]), "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"]),
             "token": ("setup.py", ["--token"]), "list": ("reviews.py", ["list"]),
             "approve": ("reviews.py", ["approve"]), "unapprove": ("reviews.py", ["unapprove"])}
 

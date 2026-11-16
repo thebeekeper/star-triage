@@ -28,6 +28,8 @@ auto_install / approve, an "Install plan (automated)" note section, and
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -35,6 +37,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from common import ROOT, TRUSTED_DIR, WORK_DIR, github_user, load_config, normalize_url, split_note, write_note
@@ -51,11 +54,15 @@ SAFE_ARG = re.compile(r"^[A-Za-z0-9@%+=:,./_-]{1,100}$")
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 # A command name: no paths, no extensions (so not /bin/sh, bash.exe or python3.12).
 COMMAND_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-# PyPI does not list a package's commands, so a proposed `command` is also refused if it is a
-# shell, interpreter or downloader. Setup steps use an allow-list instead (see check_setup).
+# A proposed `command` is also refused if it is a shell, interpreter or downloader. Setup steps
+# use an allow-list instead (see check_setup): the commands the package itself installs.
 NOT_A_COMMAND = {"sh", "bash", "zsh", "fish", "cmd", "powershell", "pwsh", "iex", "irm", "curl", "wget",
                        "sudo", "su", "rm", "del", "python", "python3", "py", "node", "deno", "bun", "npx", "npm",
                        "pnpm", "yarn", "pip", "pip3", "pipx", "uv", "uvx", "git", "eval", "exec", "source", "."}
+# PyPI's JSON does not list a package's commands; they are read from the release's wheel
+# (entry_points.txt), downloaded from PyPI's file host and checked against PyPI's sha256.
+WHEEL_MAX_BYTES = 30_000_000
+WHEEL_HOST = "https://files.pythonhosted.org/"
 GITHUB_REPO = re.compile(r"github\.com[/:]([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(?:\.git)?(?:[/#?].*)?$", re.I)
 
 
@@ -120,7 +127,45 @@ def pypi_package(name: str) -> dict | None:
     repos = [r for r in (repo_from_url(u) for u in urls) if r]
     # Prefer the link that is the bare repository (issue/doc links often point elsewhere).
     return {"version": info["version"], "repo": repos[0] if repos else None, "all_repos": repos, "has_bin": True,
+            "bins": wheel_commands(data.get("urls") or []),
             "extras": [str(e).lower() for e in info.get("provides_extra") or []]}
+
+
+def console_scripts(text: str) -> list[str]:
+    """The command names in an entry_points.txt's [console_scripts] section."""
+    names, inside = [], False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            inside = line == "[console_scripts]"
+        elif inside and "=" in line:
+            name = line.split("=", 1)[0].strip()
+            if COMMAND_NAME.match(name):
+                names.append(name)
+    return names
+
+
+def wheel_commands(files: list) -> list[str]:
+    """The commands a PyPI release installs (e.g. graphifyy installs `graphify`), from its wheel.
+    Empty when there is no wheel, it is too big, or its hash does not match PyPI's."""
+    wheel = next((f for f in files if isinstance(f, dict) and str(f.get("filename", "")).endswith(".whl")
+                  and str(f.get("url", "")).startswith(WHEEL_HOST)
+                  and 0 < int(f.get("size") or 0) <= WHEEL_MAX_BYTES
+                  and (f.get("digests") or {}).get("sha256")), None)
+    if not wheel:
+        return []
+    try:
+        req = urllib.request.Request(wheel["url"], headers={"User-Agent": "star-triage"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            blob = resp.read(WHEEL_MAX_BYTES + 1)
+        if len(blob) > WHEEL_MAX_BYTES or hashlib.sha256(blob).hexdigest() != wheel["digests"]["sha256"]:
+            return []
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            entry = next((i for i in z.infolist() if i.filename.count("/") == 1
+                          and i.filename.endswith(".dist-info/entry_points.txt") and i.file_size < 100_000), None)
+            return console_scripts(z.read(entry).decode("utf-8", "replace")) if entry else []
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, zipfile.BadZipFile, KeyError):
+        return []
 
 
 # ----------------------------------------------------------------- deciding
@@ -233,7 +278,7 @@ def resolve(item: dict, scan: dict, proposal: dict) -> dict:
         if kind == "cli":
             setup = proposal.get("setup") or []
             if setup:
-                own = info["bins"] if registry == "npm" else [package, spec.get("command", "")]
+                own = info["bins"] if registry == "npm" else [package, spec.get("command", ""), *info.get("bins", [])]
                 err = check_setup(setup, scan, own)
                 if err:
                     return {"kind": "manual", "name": name, "spec": {}, "problem": f"setup step rejected: {err}"}

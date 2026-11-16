@@ -65,7 +65,8 @@ Then run setup again; it picks up at the push.
 ### The first runs review far more repos than I starred today
 
 Every repo you starred before setup counts as new. They are reviewed newest first,
-`max_per_run` per run (default 8), every 3 hours, until none are left. Lower `max_per_run` in
+`max_per_run` per run (default 8), at each check (every 3 hours unless you changed it), until
+none are left. The first run takes only 3, so you see results in a few minutes. Lower `max_per_run` in
 `config.yml` to go slower, list repos under `ignore` to leave them out, or disable the workflow
 to pause (`gh workflow disable star-triage.yml`).
 
@@ -174,6 +175,16 @@ It logs you in through the browser, shows the token, and you paste it at a hidde
 sends it straight to GitHub. It offers to clear the screen afterwards. Using an Anthropic API
 key instead: add `--api-key`. Then tell Claude you're done; the skill checks the secret by name
 and starts the first run.
+
+### `token` asks "Right account?"
+
+Before anything else, `token` prints the GitHub account the GitHub CLI is logged in to and the
+repo the secret goes to. Answer `n` if either is wrong: nothing is changed. Switch with
+`gh auth switch` (or `gh auth login`), check with `gh auth status`, and run it again. A new
+terminal window can be logged in to a different account than the one setup used (for example
+when you test with a second account): check `gh auth status` there first. "Careful: o/r belongs
+to X, not Y" means the repo's owner is not the logged-in account; only the owner (or an admin)
+can store its secrets.
 
 ### `token` says it "only runs in your own terminal"
 
@@ -513,7 +524,9 @@ sync --now`) installs it at once. That skips only the delay: the daily limit sta
 and blocked items still need you. To stop it instead, untick `approve` on its note
 (`python3 star-triage.py unapprove owner/name`), or run `python3 star-triage.py pause`.
 "wait for tomorrow (daily limit N)" means `auto_daily_limit` was reached today. To shorten the
-wait for good, lower `auto_wait_hours` in config.yml (0 = no delay).
+wait for good: `python3 star-triage.py schedule --install-wait 0` (or `/star-triage:schedule`),
+which sets `auto_wait_hours` (0 = no wait) and pushes it. Items that share a time are named
+together: "ponytail and brag install after 18:58".
 
 ### `Unable to resolve action thebeekeper/star-triage@v1`
 
@@ -581,10 +594,10 @@ state) and `python3 star-triage.py history` (what was installed and why). The us
   computer. If its push failed, the workflow still uses the old mode: run `git push` in your
   data repo.
 
-### `mode`, `pause`, `undo`, `history`, `list`, `approve` or `token` is not a command
+### `mode`, `schedule`, `pause`, `undo`, `history`, `list`, `approve` or `token` is not a command
 
-The `star-triage.py` launcher in your data repo is older than the plugin (`list`, `approve`,
-`unapprove` and `token` came in 5.5.0, `mode` and the rest in 5.2). The copy at
+The `star-triage.py` launcher in your data repo is older than the plugin (`schedule` came in
+5.6.0, `list`, `approve`, `unapprove` and `token` in 5.5.0, `mode` and the rest in 5.2). The copy at
 `~/.claude/star-triage.py` is always current: `python3 "$HOME/.claude/star-triage.py" list`. Run
 `python3 star-triage.py setup --skip-config` and answer `y` when it offers to update the
 launcher. Until then, `/star-triage:mode` in Claude Code does the same.
@@ -674,11 +687,55 @@ approve owner/name` does exactly what ticking `approve` in Obsidian does: it set
 later re-review keeps only an `approve` it can see). `unapprove` unticks it. Answer "No" to
 the Obsidian question in setup (or set `obsidian: false`) and setup skips the Obsidian tips.
 
+### `list` says "Couldn't fetch the latest reviews"
+
+`list`, `approve` and `unapprove` run `git pull --ff-only --autostash` first, like sync, so a
+review merged on GitHub shows without a manual pull. That pull failed (offline, not logged in to
+GitHub, or your folder has commits GitHub doesn't), so the table shows the notes on your
+computer and may miss the newest. Run `git pull` in your repo folder to see why. "No reviews
+yet" after a pull that worked means the first run's pull request isn't merged yet.
+
+### The Kind column says `app`, `library` or `proxy / CLI`
+
+Repos with nothing star-triage can install show the note's `type`, lowercase like the
+installable kinds (`plugin`, `skill`, `MCP server`, `CLI tool`). Since 5.6.0 they share one style.
+
 ### `list` says `waiting for you`
 
 The review found something to install, but nothing approves it yet: the verdict or risk is
 outside your star-triage mode, or it's High risk (never automatic in the auto modes). Read it
 with `list --repo owner/name`, then `approve owner/name` if you want it.
+
+## The schedule (how often reviews run, how long installs wait)
+
+### How often does star-triage check, and how long do installs wait?
+
+Two timers. **Reviews:** GitHub checks for new stars every 3 hours by default; it is the `cron`
+line in `.github/workflows/star-triage.yml`, and `check_every_hours` in config.yml keeps the same
+number. **Installs** (auto modes only): a reviewed tool installs by itself `auto_wait_hours`
+after its review (1 by default), the next time Claude Code starts. See both:
+`python3 star-triage.py schedule` (or `/star-triage:schedule`). Change them:
+`schedule --check-every 1` (1, 3, 6, 12 or 24) and `schedule --install-wait 0` (0 = no wait).
+A check with no new stars costs no Claude usage; hourly checks use about 720 minutes of Actions
+time a month, within GitHub's 2,000 free minutes for private repos.
+
+### `schedule` says "git push failed" after changing how often it checks
+
+The change edits the workflow file, and GitHub refuses workflow changes from a login without the
+`workflow` scope. Run `gh auth refresh -s workflow`, then `git push` in your repo folder. Until
+the push works, GitHub keeps checking on the old schedule.
+
+### Doctor: `config.yml says check_every_hours: N, but the workflow checks ...`
+
+Someone edited one of the two by hand. GitHub goes by the workflow's `cron` line. Set both to one
+value: `python3 star-triage.py schedule --check-every N`. A custom cron (for example weekdays
+only) is fine: delete `check_every_hours` from config.yml and the warning stops.
+
+### GitHub ran the check later than the hour I chose
+
+GitHub delays scheduled runs when it is busy, sometimes by 10 to 30 minutes, and can skip one
+now and then. star-triage starts at minute 17 to avoid the busiest time. The next check catches
+anything missed. Need a run now: *Actions → star-triage → Run workflow*.
 
 ## Viewing the repo
 

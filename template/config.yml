@@ -1,5 +1,6 @@
 # star-triage configuration. Edit, commit, done.
-# The schedule lives in .github/workflows/star-triage.yml (GitHub requires it there).
+# How often reviews run lives in .github/workflows/star-triage.yml (GitHub requires it there);
+# check_every_hours below mirrors it. Change it with: python star-triage.py schedule
 
 # Who approves installs: manual (you approve every install), auto (Low-risk items install
 # by themselves) or auto-plus (Low and Medium). High-risk and blocked items always wait for
@@ -13,6 +14,11 @@ github_user: ""
 # Each repo costs roughly one short research session, so start small.
 max_per_run: 8
 
+# How often GitHub checks for new stars: 1, 3, 6, 12 or 24 hours. GitHub reads it from the
+# cron line in .github/workflows/star-triage.yml; this copy lets the doctor spot the two
+# disagreeing. Change both with: python star-triage.py schedule
+check_every_hours: 3
+
 # Model for the triage step: sonnet (good and cheaper), opus (deeper), haiku (cheapest).
 model: sonnet
 
@@ -21,8 +27,9 @@ model: sonnet
 marketplace_name: my-stars
 install_scope: user
 
-# star-triage auto and auto-plus modes only. An item installs by itself once its review is this many hours old (time
-# to untick it or pause), and at most this many items install per day on one computer.
+# star-triage auto and auto-plus modes only. An item installs by itself once its review is this
+# many hours old (time to untick it or pause; 0 = no wait), and at most this many items install
+# per day on one computer. Change the wait with: python star-triage.py schedule
 # Skip the wait for what is approved now: /star-triage:sync now (or python star-triage.py sync --now).
 auto_wait_hours: 1
 auto_daily_limit: 5

@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import schedule as sched  # noqa: E402
 from paths import (AUTO_MERGE_LOW_RISK, AUTO_MERGE_NEVER, DEFAULT_MAX_PER_RUN, ENGINE_DIR,  # noqa: E402
                    MODES, MODE_SHORT, REPO_URL, TROUBLESHOOTING_URL, daily_limit, find_data_root,
-                   launcher_command, read_mode, running_as_plugin, safe_console, wait_hours)
+                   launcher_command, read_mode, read_simple_config, running_as_plugin, safe_console,
+                   wait_hours)
 
 ROOT = find_data_root() or Path.cwd()  # your data repo (see paths.py)
 CONFIG_PATH = ROOT / "config.yml"
@@ -209,6 +211,9 @@ def check_config(path: Path = CONFIG_PATH) -> list[Result]:
         if key in cfg and not (isinstance(cfg[key], int) and not isinstance(cfg[key], bool) and low <= cfg[key] <= high):
             bad(f"{key} must be a whole number from {low} to {high}", f"e.g. {key}: {1 if low == 0 else 5}")
 
+    if "check_every_hours" in cfg and cfg["check_every_hours"] not in sched.CHECK_CHOICES:
+        bad("check_every_hours must be 1, 3, 6, 12 or 24", "Set it with: python star-triage.py schedule --check-every 3")
+
     if str(cfg.get("install_scope", "user")) not in SCOPES:
         bad("install_scope must be user, project or local", "e.g. install_scope: user")
 
@@ -304,6 +309,7 @@ def check_local() -> list[Result]:
                           "python star-triage.py setup sets your private GitHub noreply address for this repo."))
 
     out += check_config()
+    out += check_schedule()
     if (ROOT / ".star-triage" / "paused").exists():
         out.append(Result("warn", "Automatic installs are paused on this computer",
                           "Nothing installs or is removed by itself until you run: python star-triage.py resume"))
@@ -327,6 +333,21 @@ def check_local() -> list[Result]:
     return out
 
 
+def check_schedule() -> list[Result]:
+    """How often GitHub checks (the workflow's cron), and whether config.yml says the same."""
+    hours, cron = sched.workflow_hours(ROOT)
+    if cron is None:
+        return []
+    out = [Result("ok", f"Schedule: GitHub checks for new stars {sched.check_words(hours)}"
+                  + (f' (cron "{cron}", UTC)' if not hours else ""))]
+    problem = sched.mismatch(ROOT, read_simple_config(ROOT / "config.yml"))
+    if problem:
+        out.append(Result("warn", problem[0].upper() + problem[1:],
+                          "Set both to one value: python star-triage.py schedule --check-every N "
+                          "(1, 3, 6, 12 or 24)"))
+    return out
+
+
 def check_layout() -> list[Result]:
     """The data repo should call the star-triage Action, not carry its own copy of the code."""
     out = []
@@ -344,9 +365,9 @@ def check_layout() -> list[Result]:
     if not launcher.exists() and "scripts/select_new.py" not in text:
         out.append(Result("warn", "star-triage.py (the command launcher) is missing from your data repo",
                           "Run setup, which adds it."))
-    elif launcher.exists() and '"token"' not in launcher.read_text(encoding="utf-8", errors="ignore"):
+    elif launcher.exists() and '"schedule"' not in launcher.read_text(encoding="utf-8", errors="ignore"):
         out.append(Result("warn", "star-triage.py in your data repo is older than the plugin: it lacks "
-                                  "some commands (token, list, approve)",
+                                  "some commands (schedule, token, list, approve)",
                           "Run python star-triage.py setup --skip-config: it offers to update the launcher."))
     return out
 

@@ -75,8 +75,10 @@ registries. The merge (or a tick) is the human approval.
 
 ## 4. Key decisions and why
 
-- **Poll every 3 h** (cron `17 */3 * * *`): no star event exists; runs with no new stars stop
-  before Claude (no usage), ~240 Actions min/month private.
+- **Poll every 3 h by default** (cron `17 */3 * * *`): no star event exists; runs with no new
+  stars stop before Claude (no usage), ~240 Actions min/month private. Since 5.6.0 the user picks
+  1, 3, 6, 12 or 24 h (setup, `schedule`); the cron line is the truth, `check_every_hours` in
+  config.yml mirrors it for the doctor's mismatch warning. Minute 17 always.
 - **Obsidian over Notion**: plain Markdown in git, works offline, Bases gives table views.
 - **Merge = approval; human gate kept by default.** `auto_merge: notes` (default), `low-risk`,
   `never`. The owner explicitly agreed to keep the human merge step; `low-risk` is opt-in.

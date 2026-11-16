@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up star-triage from the chat, or check and fix an existing setup. Asks four questions, shows one plan, then runs setup itself (creates or links the data repo, applies the GitHub settings, starts the first run). The only terminal step is the Claude token, through one short command. Run manually with /star-triage:setup.
+description: Set up star-triage from the chat, or check and fix an existing setup. Asks a few questions, shows one plan, then runs setup itself (creates or links the data repo, applies the GitHub settings, starts the first run). The only terminal step is the Claude token, through one short command. Run manually with /star-triage:setup.
 disable-model-invocation: true
 ---
 
@@ -51,14 +51,25 @@ if that is not found; use the one that works in every command).
      Then `auto`: "Only Low-risk tools install by themselves." Then `manual`: "You approve
      every install." For an existing repo whose mode the doctor showed, add "(current)".
    - **Repos per run**: `8 (default)`, `5`, `3` ("keeps Claude usage low"). Every repo starred
-     so far gets reviewed, this many per run, every 3 hours.
+     so far gets reviewed, this many per run. (The first run always takes 3, so they see
+     results in a few minutes.)
    - **Data repo**: if the doctor found one, `Use owner/name (Recommended)` and `Create a new
      one`; otherwise `Create a new private repo "my-stars" (Recommended)` and `Use one I already
      have` (they type owner/name, or a different new name, in "Other").
    - **Obsidian**: "Do you read your notes in Obsidian?" `Yes` / `No, show them here`
      (No: /star-triage:list shows the reviews instead).
 
-5. Build the flags: `--mode <mode> --max <n> --obsidian|--no-obsidian`, plus `--repo owner/name`
+   Then ask the timing questions in a second AskUserQuestion call:
+   - **How often should GitHub check for new stars?** `Every 3 hours (Recommended)`,
+     `Every hour`, `Every 6 hours`, `Once a day` (12 hours: they type it in "Other"). Say: a check
+     with no new stars stops before Claude runs, so it uses no Claude usage, only about a minute
+     of GitHub Actions time. Flag: `--check-every 3` (1, 3, 6, 12 or 24).
+   - Only if they chose `auto` or `auto-plus`: **How long should a reviewed tool wait before it
+     installs by itself?** `1 hour (Recommended)`, `No wait`, `6 hours`, `24 hours`. Say: the wait
+     is time to untick it or pause first. Flag: `--install-wait 1` (0 = no wait, 1, 6 or 24).
+
+5. Build the flags: `--mode <mode> --max <n> --obsidian|--no-obsidian --check-every <h>`, plus
+   `--install-wait <h>` in the auto modes, plus `--repo owner/name`
    (existing) or `--new-repo <name>` (new; add `--folder <parent>` only if they named a folder;
    the default is ~/Documents). Run, with a 10-minute Bash timeout:
    `PY "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" <flags>`
@@ -95,10 +106,20 @@ if that is not found; use the one that works in every command).
    - The run may take a minute to appear on the Actions page: GitHub can say "Workflow run was
      successfully requested" while the list still shows no runs; refresh after a few seconds.
      No stars yet? Star a few repos first: with none, the run has nothing to review.
-   - They should see a green run, then a pull request with one note per repo. It merges itself
-     or waits for them to merge it, depending on the star-triage mode.
-   - Notes and approved installs reach this computer by themselves when Claude Code starts
-     (after the safety delay in the auto modes). `/star-triage:sync now` installs at once.
+   - They should see a green run, then a pull request with one note per repo. State the rule
+     for the mode they chose, don't hedge ("may be up to you"):
+     - manual: "It merges itself when it only adds notes. If it approves installs, it waits for
+       you: merging it approves them."
+     - auto: "It merges itself unless it approves an install above Low risk; then it waits for you."
+     - auto-plus: "It merges itself unless it approves an install above Medium risk; then it
+       waits for you."
+   - Say why the first run is small: it reviews 3 so they see results in a few minutes; after
+     that, "repos per run" each check.
+   - Both timers, with their numbers (setup prints them under "Timers"): reviews run every N
+     hours (the cron line in the workflow); in the auto modes a reviewed tool installs by itself
+     N h after its review, the next time Claude Code starts (`auto_wait_hours`).
+     `/star-triage:sync now` installs what is approved at once. Change either later with
+     `/star-triage:schedule`.
    - Reading notes: Obsidian users open the data repo folder as a vault, then
      `tracker/Star Triage.base`. Others: `/star-triage:list`.
    - Problems and fixes: https://github.com/thebeekeper/star-triage/blob/main/docs/TROUBLESHOOTING.md
@@ -106,6 +127,7 @@ if that is not found; use the one that works in every command).
 ## Changing settings later
 
 For an existing data repo the same flags work: e.g. `setup.py --max 3` prints the plan, then
-`--yes` commits and pushes config.yml. The mode alone: use /star-triage:mode. Projects
+`--yes` commits and pushes config.yml. The mode alone: use /star-triage:mode. The check
+interval or the install wait alone: use /star-triage:schedule. Projects
 (`contexts`, optional `relevant_to` labels) are edited in config.yml by the user; quote strings
 that contain a colon and keep `General`.

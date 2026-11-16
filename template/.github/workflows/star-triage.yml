@@ -6,6 +6,7 @@ name: star-triage
 on:
   schedule:
     # Every 3 hours (UTC). A check with no new stars stops before Claude runs.
+    # Change it with: python star-triage.py schedule (it keeps config.yml in step).
     - cron: "17 */3 * * *"
   workflow_dispatch:
     inputs:

@@ -25,7 +25,7 @@ within its risk limit approve themselves.
 
 ```mermaid
 flowchart LR
-  A[You star a repo] --> B[Check every 3 h]
+  A[You star a repo] --> B[Check every 3 h, or as you set it]
   B --> C{New stars?}
   C -- no --> Z[Done, no Claude usage]
   C -- yes --> D[Read-only clone, commit recorded]
@@ -156,7 +156,10 @@ permissions. Read the PR before merging, especially the Install plan and Securit
   Sonnet is the default (`model` in `config.yml`). Checks with no new stars use no Claude usage.
 - **Your backlog:** every repo you starred before setup is reviewed too, newest first,
   `max_per_run` per run (default 8) every 3 hours, so up to 64 reviews a day until it has
-  caught up. With 200 stars that is about three days. To go slower, lower `max_per_run`. To
+  caught up (the first run takes 3, so you see results in a few minutes). With 200 stars that
+  is about three days. Checking every hour (`schedule --check-every 1`) catches up faster and
+  uses about 720 Actions minutes a month, within the 2,000 free for private repos. To go
+  slower, lower `max_per_run`. To
   leave repos out, list them under `ignore` in `config.yml`. To pause, disable the workflow.
 - **GitHub Actions:** free for public repos. A private repo uses about 240 minutes a month for
   the 3-hourly checks, inside the 2,000 free minutes of GitHub's free plan. Change the `cron`
@@ -206,7 +209,7 @@ permissions. Read the PR before merging, especially the Install plan and Securit
 | `installs.json` | Every reviewed install, pinned, with its approval (written by the workflow) |
 | `.claude-plugin/marketplace.json` | Reviewed plugins, pinned, for Claude Code's plugin installer |
 | `star-triage.py` | The launcher for every command in the README |
-| `.github/workflows/star-triage.yml` | Runs every 3 hours and calls the Action |
+| `.github/workflows/star-triage.yml` | Runs every 3 hours (its `cron` line; `star-triage.py schedule` changes it) and calls the Action |
 | `.star-triage/` | On your computer only: `sync.log`, `history.jsonl`, the pause flag |
 
 ## Set up by hand
@@ -251,7 +254,8 @@ yourself.
 does, list names are used as category hints. Stars themselves are always public.
 
 **Why not trigger instantly when I star something?** GitHub has no event for starring someone
-else's repo, so star-triage checks every 3 hours instead.
+else's repo, so star-triage checks every 3 hours instead (every 1 to 24 hours, your choice:
+`star-triage.py schedule --check-every N`).
 
 **Will it review the same repo twice?** No. A repo with a note in `tracker/` is skipped,
 matched by its URL. To review one again, run the workflow with **retriage** set to its

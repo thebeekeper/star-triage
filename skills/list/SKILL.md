@@ -33,3 +33,6 @@ Rules:
    /star-triage:sync now.
 5. Don't edit notes, `installs.json` or `config.yml` yourself; these commands do the one edit
    needed.
+6. The commands fetch the latest reviews first (`git pull`), so don't run `git pull` yourself.
+   If one prints "Couldn't fetch the latest reviews", say the list may be missing the newest
+   reviews and pass on that line.

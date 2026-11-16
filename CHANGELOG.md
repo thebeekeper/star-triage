@@ -1,5 +1,38 @@
 # Changelog
 
+## 5.6.0
+Last round before launch: you choose the schedule, and setup says exactly what happens next.
+- **You choose both timers.** Setup asks "How often should GitHub check for new stars?" (every
+  1, 3 (recommended), 6, 12 hours or once a day) and, in the auto modes, "How long should a
+  reviewed tool wait before it installs by itself?" (no wait, 1 hour (recommended), 6 or 24
+  hours), in the terminal and in `/star-triage:setup` (flags `--check-every HOURS`,
+  `--install-wait HOURS`). The interval is written into the workflow's `cron` line (minute 17)
+  and pushed; config.yml keeps it as `check_every_hours`, and the doctor warns when the two
+  disagree. Later: `python star-triage.py schedule` (shows both and asks), `schedule
+  --check-every 1`, `schedule --install-wait 0`, or `/star-triage:schedule` in Claude Code. It
+  commits and pushes the change. High-risk and blocked items still never install by themselves.
+- **Both timers in one place (UT-19).** The README ("The two timers"), setup's plan and its
+  final message give both numbers, where each is set, and the command to change them.
+- **Why the first run is small (UT-21):** 3 repos, "so you see results in a few minutes"; after
+  that `max_per_run` per check. In the plan, the final message and the README.
+- **The merge rule, stated (UT-22).** Setup's last message and the skill say what the run's pull
+  request does in the chosen mode, instead of "may be up to you".
+- **`list`, `approve` and `unapprove` pull first (UT-23)**, like sync. If the pull fails they use
+  the local notes and say "Couldn't fetch the latest reviews". The Kind column uses one style.
+- **`token` names the account (UT-20).** It prints the GitHub account and the repo the secret
+  goes to, and asks "Right account? [Y/n]" before `claude setup-token`.
+- **Start-up line groups items that share a time:** "ponytail and brag install after 18:58".
+- **README (UT-24 and launch).** A Quick start box under the intro (three Claude Code commands,
+  about 10 minutes, one terminal line for the token). Daily use leads with the Claude Code
+  commands, labels the rest "In a terminal, in your repo folder", and says how to check an
+  install (`claude plugin list`, `claude mcp list`, restart Claude Code).
+- **Fix: PyPI tools whose command differs from the package name.** A setup step like
+  `graphify install` for the package `graphifyy` was rejected ("not the tool's own command"),
+  although the triage prompt uses it as its example. The resolver now reads the package's
+  commands from its wheel on PyPI (`entry_points.txt`, sha256-checked against PyPI), so code,
+  not Claude, still decides what may run. `tests/test_install_plans.py` passes again.
+- The doctor and setup offer to update an old `star-triage.py` launcher that lacks `schedule`.
+
 ## 5.5.1
 - README rewritten for a new user (UT-1, UT-2, UT-17): what it does, six install steps with
   "You should see" and "If it fails" for each, what happens next with one table of the

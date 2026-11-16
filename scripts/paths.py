@@ -84,6 +84,21 @@ def merge_policy(cfg: dict) -> str:
     return read_mode(cfg)
 
 
+# What happens to a run's pull request, said plainly per mode (UT-22). publish.py decides it
+# with may_merge below; these sentences describe that rule.
+MERGE_RULES = {
+    "manual": "It merges itself when it only adds notes. If it approves installs, it waits for you: "
+              "merging it approves them.",
+    "auto": "It merges itself unless it approves an install above Low risk; then it waits for you.",
+    "auto-plus": "It merges itself unless it approves an install above Medium risk; then it waits for you.",
+    "never": "It always waits for you to merge it (auto_merge: never in config.yml).",
+}
+
+
+def merge_rule(cfg: dict) -> str:
+    return MERGE_RULES.get(merge_policy(cfg), MERGE_RULES["manual"])
+
+
 def may_merge(policy: str, risks: list) -> bool:
     """May a review PR merge itself, given the risk of each install it newly approves?"""
     policy = {"notes": "manual", "low-risk": "auto"}.get(policy, policy)  # names used before 5.2
@@ -109,12 +124,16 @@ def daily_limit(cfg: dict) -> int:
 def read_simple_config(path: Path) -> dict:
     """Top-level `key: value` settings of config.yml, read without PyYAML (sync.py and mode.py
     need only the standard library). Lists and nested settings are left out."""
-    out = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        return parse_simple_config(path.read_text(encoding="utf-8"))
     except OSError:
-        return out
-    for line in lines:
+        return {}
+
+
+def parse_simple_config(text: str) -> dict:
+    """read_simple_config for config.yml's text."""
+    out = {}
+    for line in text.splitlines():
         if not line or line[0] in " \t#-" or ":" not in line:
             continue
         key, _, value = line.partition(":")

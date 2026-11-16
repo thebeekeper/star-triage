@@ -546,12 +546,29 @@ def names_and_more(names: list[str], most: int = 3) -> str:
     return ", ".join(names[:most]) + (f" and {len(names) - most} more" if len(names) > most else "")
 
 
-def waiting_text(waiting: list, wait_h: int, now: dt.datetime | None = None) -> str:
-    """'ponytail installs after 11:52, brag after 12:10 (6 h safety delay)' (UT-18)."""
-    bits = [f"{short_name(k, i)} {'installs ' if not n else ''}after "
-            f"{local_time(reviewed_time(i) + dt.timedelta(hours=wait_h), now)}"
-            for n, (_, k, i) in enumerate(waiting[:3])]
-    more = f" and {len(waiting) - 3} more" if len(waiting) > 3 else ""
+def and_join(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def waiting_text(waiting: list, wait_h: int, now: dt.datetime | None = None, most: int = 3) -> str:
+    """'ponytail and brag install after 18:58, ccusage after 19:40 (1 h safety delay)': items
+    that share a time are named together (UT-18, UT-24). At most `most` names; the rest counted."""
+    groups: dict[str, list[str]] = {}
+    for _, k, i in sorted(waiting, key=lambda s: reviewed_time(s[2])):
+        when = local_time(reviewed_time(i) + dt.timedelta(hours=wait_h), now)
+        groups.setdefault(when, []).append(short_name(k, i))
+    bits, shown, hidden = [], 0, 0
+    for when, names in groups.items():
+        room = most - shown
+        if room <= 0:
+            hidden += len(names)
+            continue
+        take = names[:room]
+        shown += len(take)
+        label = take + ([f"{len(names) - len(take)} more"] if len(names) > len(take) else [])
+        verb = "" if bits else ("installs " if len(names) == 1 else "install ")
+        bits.append(f"{and_join(label)} {verb}after {when}")
+    more = f" and {hidden} more" if hidden else ""
     return ", ".join(bits) + more + f" ({wait_h} h safety delay)"
 
 
@@ -617,17 +634,22 @@ def execute(steps, state: dict, sync: Sync, confirm_blocked: bool) -> dict:
     return result
 
 
-def pull(quiet: bool) -> None:
+def pull(quiet: bool) -> bool:
+    """Bring the latest notes and approvals from GitHub. False when that failed (the local
+    copy is used then); True when it worked or there is no git repo to pull."""
     if not (ROOT / ".git").exists():
-        return
+        return True
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
         res = subprocess.run(["git", "pull", "--ff-only", "--autostash", "-q"], cwd=ROOT, env=env,
                              capture_output=quiet, timeout=30, stdin=subprocess.DEVNULL)
         if res.returncode:
             log("git pull failed; using the approvals already on this computer")
+            return False
+        return True
     except (OSError, subprocess.TimeoutExpired):
         log("git pull timed out; using the approvals already on this computer")
+        return False
 
 
 def read_scope() -> str:

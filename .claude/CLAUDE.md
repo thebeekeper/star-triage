@@ -11,8 +11,13 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
   - `action.yml`: composite GitHub Action that a user's data repo calls as `thebeekeper/star-triage@v1`.
   - Claude Code plugin (repo root = plugin root): `.claude-plugin/plugin.json` + `marketplace.json`
     (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`; it also starts the
-    plugin's self-update when installs.json's engine_version is newer), `skills/setup|sync|mode|list|triage`.
-  - `scripts/reviews.py`: `list`, `approve`, `unapprove` (the review table without Obsidian).
+    plugin's self-update when installs.json's engine_version is newer), `skills/setup|sync|mode|list|schedule|triage`.
+  - `scripts/reviews.py`: `list`, `approve`, `unapprove` (the review table without Obsidian); each
+    first does the same quiet `git pull --ff-only --autostash` as sync.
+  - `scripts/schedule.py`: the two timers. How often GitHub checks = the workflow's `cron` line
+    (the truth; minute 17), mirrored as `check_every_hours` in config.yml for the doctor's
+    mismatch warning; the install wait = `auto_wait_hours`. Setup takes `--check-every` and
+    `--install-wait`; `star-triage.py schedule` changes them later, commits and pushes.
 - **User data repo** (skeleton in `template/`): `config.yml`, `tracker/` notes, `installs.json`,
   `.claude-plugin/marketplace.json` (their reviewed plugins), `star-triage.py` launcher, tiny workflow.
 - `scripts/paths.py` finds the data repo: `STAR_TRIAGE_DATA` → cwd → engine dir (old layout) →
@@ -36,8 +41,10 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
   `approve` tick; blocked items need a typed `install`; sync never passes `--yes`. Auto modes
   (`auto`, `auto-plus`) are opt-in, never cover High-risk or blocked items, and keep the safety
   delay, the daily limit, pause, undo and history. `paths.read_mode` is the only place the
-  setting (and the older `auto_merge`) is read. Setup lists auto-plus first as recommended, but
-  Enter keeps the current mode and a config without `mode:` is manual. Only an explicit user
+  setting (and the older `auto_merge`) is read. `auto_wait_hours: 0` (no wait) is allowed only as
+  the user's own choice (setup's question, `schedule --install-wait 0`), never a default.
+  Setup lists auto-plus first as recommended, but Enter keeps the current mode and a config
+  without `mode:` is manual. Only an explicit user
   command skips the delay (`sync --now`); it keeps everything else and is recorded in the history.
 - **Claude Code's settings.json is touched in one place only:** setup sets the documented
   `autoUpdate` field on the existing `extraKnownMarketplaces.star-triage` entry (with a backup).

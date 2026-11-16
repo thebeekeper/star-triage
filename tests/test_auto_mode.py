@@ -217,7 +217,13 @@ def test_hook_message() -> None:
     waits = [("install", f"x/w{n}", item(f"w{n}", hours=1)) for n in range(5)]
     text = sync.waiting_text(waits, 6)
     check("hook: several waiting items are named, the rest counted",
-          text.startswith("w0 installs after ") and ", w1 after " in text and text.endswith(" and 2 more (6 h safety delay)"))
+          text.startswith("w0, w1, w2 and 2 more install after ") and text.endswith(" (6 h safety delay)"))
+    pair = [("install", "x/ponytail", item("ponytail", hours=1)), ("install", "x/brag", item("brag", hours=1)),
+            ("install", "x/later", item("later", hours=0))]
+    text = sync.waiting_text(pair, 1)
+    check("hook: items that share a time are grouped (UT-24)",
+          text.startswith("ponytail and brag install after ") and ", later after " in text
+          and text.endswith(" (1 h safety delay)"))
 
     # a1 installs now (in this process, with the stand-in installer), so the hook finds the
     # limit used up and starts no background install of its own.

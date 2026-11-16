@@ -5,9 +5,19 @@ section is written so it can be used as-is in a launch post or README.
 
 ## 1. Star it and forget it
 
-- **Picks up new stars within hours.** A lightweight check runs every 3 hours. GitHub has no
-  event for "a user starred someone else's repo", so polling is the only option, and a check
-  with nothing new finishes in under a minute without starting Claude.
+- **Picks up new stars within hours.** A lightweight check runs every 3 hours by default.
+  GitHub has no event for "a user starred someone else's repo", so polling is the only option,
+  and a check with nothing new finishes in under a minute without starting Claude.
+- **You choose both timers (5.6.0).** Setup asks how often GitHub should check (every 1, 3, 6,
+  12 or 24 hours) and, in the auto modes, how long a reviewed tool waits before it installs by
+  itself (no wait, 1, 6 or 24 hours). `schedule` (or `/star-triage:schedule`) shows and changes
+  both later. The interval lives where GitHub reads it, the workflow's `cron` line (always at
+  minute 17, away from the busy top of the hour); config.yml keeps a copy as `check_every_hours`
+  so the doctor can warn when someone edits one and not the other. A wait of 0 is allowed: it is
+  the user's explicit choice, and High-risk and blocked items still never install by themselves.
+- **Both timers in one place (5.6.0).** The README, setup's plan and its final message name
+  both numbers side by side (how often reviews run, how long installs wait), where each is set,
+  and the command to change them.
 - **Notes just appear.** A run that approves no new installs merges itself, so new notes show
   up in your tracker without a click. Only a run that wants to install something asks you.
 - **Never a backlog, never a pile of PRs.** While a review PR is open, later runs add their notes
@@ -75,6 +85,10 @@ section is written so it can be used as-is in a launch post or README.
 - **Not just plugins.** Claude Code plugins, skills, MCP servers (hosted or run from npm or
   PyPI) and command-line tools from npm or PyPI, including the one-time setup step a tool's
   README tells you to run (like `graphify install`) and the optional extras a Python tool needs.
+- **A tool's own commands come from the package, not from Claude (5.6.0).** A setup step must
+  start with a command the package itself installs. For npm that is `bin`; for PyPI it is read
+  from the release's wheel (`entry_points.txt`), downloaded from PyPI's file host and checked
+  against PyPI's sha256, so `graphifyy` may run `graphify install` but never `curl`.
 - **Installs while you work.** When Claude Code starts, a 0.1-second check pulls your approvals
   and installs anything new in the background. Next time, it tells you what it installed.
   Skills work straight away; plugins and MCP servers load on the next start. No command to
@@ -116,6 +130,15 @@ section is written so it can be used as-is in a launch post or README.
 - **Open and readable.** A handful of short Python scripts and one workflow file, MIT licensed.
 
 ## 7. Easy to set up, easy to fix, updates itself
+
+- **Launch-ready README (5.6.0).** A Quick start box right under the intro: the three Claude
+  Code commands, about 10 minutes, one terminal line for the token. The detailed Install
+  section follows. Daily use leads with the Claude Code commands (they work from any folder)
+  and labels the rest "In a terminal, in your repo folder".
+- **The first run is small on purpose, and says why (5.6.0).** It reviews 3 repos so you see
+  results in a few minutes; after that `max_per_run` per check.
+- **The token command names the account first (5.6.0).** `token` prints the GitHub account and
+  the repo the secret goes to, and asks "Right account? [Y/n]" before `claude setup-token`.
 
 - **Install a plugin, run one skill.** `/plugin marketplace add thebeekeper/star-triage`,
   `/plugin install star-triage@star-triage`, then `/star-triage:setup`. Setup creates your private notes repo,
@@ -258,6 +281,11 @@ section is written so it can be used as-is in a launch post or README.
 - **One line at startup.** In auto modes the Claude Code start message is a single line that
   names what waits and until when, in local time, for example
   `star-triage auto-plus: installed context7; ponytail installs after 11:52 (1 h safety delay) (install now: /star-triage:sync now)`.
+  Items that share a time are named together: `ponytail and brag install after 18:58` (5.6.0).
+- **The merge rule, said plainly (5.6.0).** Setup's last message states what the run's pull
+  request will do in the chosen mode (manual: merges itself when it only adds notes; auto:
+  unless it approves an install above Low risk; auto-plus: above Medium), instead of "may be up
+  to you". The sentences live next to the code that decides it (`paths.MERGE_RULES`).
 - **Called "star-triage mode".** Messages and docs say "star-triage mode", so it isn't confused
   with Claude Code's own auto mode (a permission mode).
 - **Nobody is switched silently.** The default stays manual, an existing config keeps its
@@ -274,6 +302,9 @@ section is written so it can be used as-is in a launch post or README.
   make the same one-line edit as the Obsidian checkbox, so every rule stays the same: a blocked
   item still needs `sync` in your own terminal and a typed `install`, and High-risk items never
   install by themselves in the auto modes. Claude can run them when you say "approve ponytail".
+- **Always the latest reviews (5.6.0).** `list`, `approve` and `unapprove` do the same quiet
+  `git pull --ff-only --autostash` as sync before reading, so a merged review shows at once. If
+  the pull fails they use the local notes and say so. The Kind column uses one style.
 - **Obsidian is optional (5.5.0).** Setup asks; with `obsidian: false` it skips the Obsidian
   tips and points to `list`, and sync's "waits for you" hints say `approve owner/name` instead
   of "tick approve in Obsidian".

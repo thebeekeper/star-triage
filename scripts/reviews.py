@@ -6,6 +6,9 @@
     python star-triage.py approve owner/name       approve its install, as ticking `approve` in Obsidian does
     python star-triage.py unapprove owner/name     untick it (an installed item is then removed)
 
+First each command fetches the latest reviews (`git pull --ff-only --autostash`, as sync does);
+if that fails, it uses the notes on this computer and says so.
+
 Status: installed / installs at next start / installs after HH:MM (auto modes' safety delay) /
 installs tomorrow (daily limit) / waiting for you / blocked / paused / nothing to install.
 approve and unapprove change only the `approve` line of the note, exactly like the checkbox in
@@ -123,8 +126,12 @@ def statuses(notes: list[dict], now: dt.datetime | None = None) -> dict[str, str
 
 
 def kind_of(n: dict) -> str:
+    """One style for every row (UT-23): lowercase, acronyms kept ('MCP server', 'CLI tool', 'app')."""
     kind = (n["item"] or {}).get("kind")
-    return KIND_NAMES.get(kind) or str(n["fm"].get("type") or "-")
+    if kind in KIND_NAMES:
+        return KIND_NAMES[kind]
+    words = str(n["fm"].get("type") or "-").lower().split()
+    return " ".join(w.upper() if w in ("mcp", "cli", "ui", "api") else w for w in words)
 
 
 def cut(text: str, width: int) -> str:
@@ -218,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
         print("No star-triage data repo found. Run this from your data repo, or set one up: /star-triage:setup")
         return 1
     command, rest = argv[0], argv[1:]
+    if not sync.pull(quiet=True):
+        print("Couldn't fetch the latest reviews from GitHub (git pull failed), so this uses the notes on this "
+              "computer.\n")
     if command in ("approve", "unapprove"):
         if len(rest) != 1:
             print(f"Usage: python star-triage.py {command} owner/name")

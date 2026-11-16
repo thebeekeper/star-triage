@@ -11,6 +11,10 @@ a local bare "origin", and tests/fake_gh.py instead of gh. Run: python tests/tes
   UT-11  a new repo starts on main even when git's default is master
   UT-5/7/8 the main flow on an existing repo: confirm the repo, one plan, then no questions
   UT-16  doctor notices when the reviews were written by a newer engine than this plugin
+  5.6    the schedule: a valid cron for each check interval, config.yml round trip, the doctor's
+         mismatch warning, `schedule` commits and pushes, setup's --check-every/--install-wait,
+         the plan's timers and first-run lines (UT-19, UT-21), the merge rule per mode (UT-22),
+         and the token command naming the account and repo before anything (UT-20)
 """
 import contextlib
 import io
@@ -80,6 +84,8 @@ def run_py(args: list, cwd: Path, **env) -> subprocess.CompletedProcess:
 make_data_repo()
 sys.path.insert(0, str(ENGINE / "scripts"))
 import doctor  # noqa: E402
+import paths  # noqa: E402
+import schedule as sched  # noqa: E402
 import setup  # noqa: E402
 
 setup.time.sleep = lambda seconds: None  # the polling waits are not needed against a fake
@@ -116,6 +122,15 @@ def test_questions_and_plan() -> None:
     check("UT-8 one plan: create on main, settings, token at a hidden prompt, first run",
           len(plan) == 4 and "me/my-stars" in plan[0] and "main" in plan[0] and "pull requests" in plan[1]
           and "hidden prompt" in plan[2] and "first run" in plan[3])
+    text = setup.config_from_flags((ENGINE / "template" / "config.yml").read_text(encoding="utf-8"),
+                                   ["--mode", "auto-plus", "--max", "5", "--check-every", "1", "--install-wait", "1"])
+    plan = setup.new_repo_plan("me", "my-stars", TMP / "my-stars", "command", text)
+    check("UT-21 the plan says why the first run is small, and the later size",
+          "3 repos, so you see results in a few minutes; after that 5 per run" in plan[3], plan[3])
+    check("UT-19 the plan names both timers with their numbers, and how to change them",
+          len(plan) == 5 and "checks for new stars every hour" in plan[4]
+          and "auto-plus mode a reviewed tool installs by itself 1 h after its review" in plan[4]
+          and "star-triage.py schedule" in plan[4], plan[-1])
 
 
 def test_start_on_main() -> None:
@@ -282,6 +297,10 @@ def test_flag_flow() -> None:
     check("setup --yes again with the secret stored: starts the first run, config unchanged",
           res.returncode == 0 and "Started." in res.stdout and "already set: CLAUDE_CODE_OAUTH_TOKEN" in res.stdout
           and git("show", "main:config.yml", cwd=ORIGIN) == shown, res.stdout[-600:] + res.stderr[-300:])
+    check("UT-21/22 the first-run message says why it is small and the merge rule for the mode",
+          "see results in a few minutes; after that 5 per run" in res.stdout
+          and "In auto-plus mode: it merges itself unless it approves an install above Medium risk" in res.stdout,
+          res.stdout[-1200:])
 
     res = run_py([script, "--new-repo", "my-stars", "--folder", TMP / "newhome", "--mode", "manual"], DATA, **fake)
     check("setup --new-repo without --yes: the plan only, nothing created",
@@ -300,6 +319,97 @@ def test_flag_flow() -> None:
           res.stdout[-400:])
 
 
+def test_schedule() -> None:
+    """5.6: the check interval (workflow cron + config.yml) and the install wait."""
+    want = {1: "17 * * * *", 3: "17 */3 * * *", 6: "17 */6 * * *", 12: "17 */12 * * *", 24: "17 0 * * *"}
+    check("schedule: each choice gives a valid cron at minute 17, read back as the same interval",
+          all(sched.cron_for(h) == c and sched.hours_from_cron(c) == h for h, c in want.items()))
+    check("schedule: crons that aren't a simple interval are not guessed",
+          sched.hours_from_cron("0 9 * * 1") is None and sched.hours_from_cron("*/5 * * * *") is None)
+    wf = (ENGINE / "template" / ".github" / "workflows" / "star-triage.yml").read_text(encoding="utf-8")
+    daily = sched.set_cron_text(wf, 24)
+    check("schedule: the workflow's cron line and its comment change, nothing else",
+          '- cron: "17 0 * * *"' in daily and "# Once a day (UTC)." in daily
+          and len(daily.splitlines()) == len(wf.splitlines()) and sched.set_cron_text(daily, 3) == wf, daily[:400])
+
+    template = (ENGINE / "template" / "config.yml").read_text(encoding="utf-8")
+    text = sched.set_wait_text(sched.set_check_text(template, 12), 0)
+    cfg_path = TMP / "cfg-check.yml"
+    cfg_path.write_text(text, encoding="utf-8")
+    check("schedule: config.yml round trip (check_every_hours 12, auto_wait_hours 0 = no wait) stays valid",
+          sched.number_in(text, "check_every_hours") == 12 and paths.wait_hours(paths.parse_simple_config(text)) == 0
+          and len(text.splitlines()) == len(template.splitlines())
+          and not [r for r in doctor.check_config(cfg_path) if r.status == "fail"])
+    old = "mode: auto\nmax_per_run: 8\nmodel: sonnet\ncontexts:\n  - name: General\n"
+    added = sched.set_wait_text(sched.set_check_text(old, 6), 1)
+    check("schedule: an older config gets both keys, with their comments",
+          "\ncheck_every_hours: 6\n" in added and "\nauto_wait_hours: 1\n" in added
+          and added.index("check_every_hours") < added.index("model:") and "star-triage.py schedule" in added, added)
+    cfg_path.write_text(template.replace("check_every_hours: 3", "check_every_hours: 5"), encoding="utf-8")
+    check("doctor: check_every_hours outside 1, 3, 6, 12, 24 fails",
+          any(r.status == "fail" and "check_every_hours" in r.label for r in doctor.check_config(cfg_path)))
+
+    config = DATA / "config.yml"
+    before = config.read_text(encoding="utf-8")
+    config.write_text(sched.set_check_text(before, 1), encoding="utf-8")
+    results = doctor.check_schedule()
+    check("doctor: warns when config.yml and the workflow's cron disagree, and says how to fix it",
+          any(r.status == "warn" and "check_every_hours: 1" in r.label and "every 3 hours" in r.label
+              and "schedule --check-every" in r.fix for r in results), str(results))
+    config.write_text(before, encoding="utf-8")
+
+    script = ENGINE / "scripts" / "schedule.py"
+    res = run_py([script, "--check-every", "2"], DATA)
+    check("schedule: a bad value is explained, exit 2, nothing changed",
+          res.returncode == 2 and "--check-every must be 1, 3, 6, 12 or 24" in res.stdout
+          and config.read_text(encoding="utf-8") == before, res.stdout + res.stderr[-300:])
+    res = run_py([script, "--check-every", "1", "--install-wait", "0"], DATA)
+    pushed_wf = git("show", "main:.github/workflows/star-triage.yml", cwd=ORIGIN)
+    pushed_cfg = git("show", "main:config.yml", cwd=ORIGIN)
+    check("schedule --check-every 1 --install-wait 0: workflow cron and config.yml committed and pushed",
+          res.returncode == 0 and '- cron: "17 * * * *"' in pushed_wf and "\ncheck_every_hours: 1\n" in pushed_cfg
+          and "\nauto_wait_hours: 0\n" in pushed_cfg
+          and git("log", "-1", "--format=%s", "main", cwd=ORIGIN).startswith("star-triage schedule: check every hour"),
+          res.stdout + res.stderr[-400:])
+    check("schedule: it then shows both timers with their numbers",
+          "checks for new stars every hour" in res.stdout and "Installs:" in res.stdout, res.stdout)
+    res = run_py([script], DATA)
+    check("schedule with no option (no terminal): shows both and how to change them, changes nothing",
+          res.returncode == 0 and "every hour" in res.stdout and "--check-every" in res.stdout
+          and git("status", "--porcelain") == "", res.stdout + res.stderr[-300:])
+
+    check("setup flags: --check-every and --install-wait are checked",
+          any("--check-every" in p for p in setup.flag_problems(["--check-every", "5"]))
+          and any("--install-wait" in p for p in setup.flag_problems(["--install-wait", "-1"]))
+          and setup.flag_problems(["--check-every", "24", "--install-wait", "6"]) == [])
+    fake = {"STAR_TRIAGE_GH": str(ENGINE / "tests" / "fake_gh.py")}
+    res = run_py([ENGINE / "scripts" / "setup.py", "--repo", "o/r", "--check-every", "6"], DATA, **fake)
+    check("setup --check-every without --yes: the plan names the new schedule, nothing changed",
+          res.returncode == 0 and "check for new stars every 6 hours" in res.stdout
+          and "timers: GitHub checks for new stars every 6 hours" in res.stdout
+          and '"17 * * * *"' in (DATA / ".github/workflows/star-triage.yml").read_text(encoding="utf-8"),
+          res.stdout[-800:] + res.stderr[-300:])
+    res = run_py([ENGINE / "scripts" / "setup.py", "--repo", "o/r", "--check-every", "6", "--yes"], DATA, **fake)
+    check("setup --check-every 6 --yes: the workflow's cron and config.yml are pushed together",
+          res.returncode == 0 and '- cron: "17 */6 * * *"' in git("show", "main:.github/workflows/star-triage.yml", cwd=ORIGIN)
+          and "\ncheck_every_hours: 6\n" in git("show", "main:config.yml", cwd=ORIGIN)
+          and "Reviews:  GitHub checks for new stars every 6 hours" in res.stdout, res.stdout[-800:] + res.stderr[-300:])
+
+    check("UT-22 the merge rule is stated for each mode",
+          "only adds notes" in paths.merge_rule({"mode": "manual"})
+          and "above Low risk" in paths.merge_rule({"mode": "auto"})
+          and "above Medium risk" in paths.merge_rule({"mode": "auto-plus"})
+          and "always waits" in paths.merge_rule({"auto_merge": "never"}))
+
+    log = TMP / "calls.log"
+    log.write_text("", encoding="utf-8")
+    setup.real_terminal, setup.input = (lambda: True), (lambda prompt="": "n")
+    code, out = captured(setup.token_main)
+    check("UT-20 token: names the GitHub account and the repo, and stops on 'no' before any token step",
+          code == 1 and "GitHub account: tester" in out and "Secret goes to: o/r" in out and "belongs to o" in out
+          and "gh auth switch" in out and "secret set" not in log.read_text(encoding="utf-8"), out)
+
+
 try:
     test_doctor_before_setup()
     test_launcher()
@@ -310,6 +420,7 @@ try:
     test_flag_helpers()
     test_main_flow()  # it links the data repo, as real setup does
     test_flag_flow()
+    test_schedule()
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if failed else 0)

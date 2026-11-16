@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -99,7 +100,9 @@ try:
           rows["x/high"])
     check("list: kind, verdict, risk and the first 'When you'd use it' example",
           "CLI tool" in rows["x/fresh"] and "Install" in rows["x/fresh"] and "you are in a hurry" in rows["x/fresh"]
-          and "a second example" not in out and "Proxy / CLI" in rows["x/docs"], out)
+          and "a second example" not in out and "proxy / CLI" in rows["x/docs"], out)
+    check("list: one style in the Kind column (lowercase, acronyms kept), UT-23",
+          "Proxy" not in out.split("When you'd use it", 1)[1], out)
 
     code, out = run("list", "--waiting")
     shown = sorted(line.split()[0] for line in out.splitlines() if line.startswith("x/"))
@@ -139,6 +142,39 @@ try:
     check("approve: a repo with nothing to install is refused, its note unchanged",
           code == 1 and (DATA / "tracker" / "docs.md").read_text(encoding="utf-8") == before, out)
     check("approve: an unknown repo exits 1", run("approve", "x/nope")[0] == 1)
+
+    # UT-23: list pulls first, like sync; if the pull fails it lists what is local and says so.
+    def git(*args, cwd):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+                       capture_output=True)
+    origin, seed, mine = TMP / "origin.git", TMP / "seed", TMP / "mine"
+    git("init", "-q", "--bare", "-b", "main", str(origin), cwd=TMP)
+    git("clone", "-q", str(origin), str(seed), cwd=TMP)
+    (seed / "tracker").mkdir()
+    shutil.copy(DATA / "config.yml", seed / "config.yml")
+    shutil.copy(DATA / "tracker" / "docs.md", seed / "tracker" / "docs.md")
+    git("add", "-A", cwd=seed)
+    git("commit", "-qm", "one", cwd=seed)
+    git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    git("clone", "-q", str(origin), str(mine), cwd=TMP)
+    shutil.copy(DATA / "tracker" / "avail.md", seed / "tracker" / "avail.md")
+    git("add", "-A", cwd=seed)
+    git("commit", "-qm", "two", cwd=seed)
+    git("push", "-q", "origin", "HEAD:main", cwd=seed)
+
+    def list_in(folder):
+        env = dict(os.environ, STAR_TRIAGE_DATA=str(folder))
+        return subprocess.run([sys.executable, str(ENGINE / "scripts" / "reviews.py"), "list"], cwd=folder, env=env,
+                              capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=60)
+    res = list_in(mine)
+    check("list: pulls first, so a review merged on GitHub shows without a manual git pull",
+          res.returncode == 0 and "x/avail" in res.stdout and "Couldn't fetch" not in res.stdout,
+          res.stdout + res.stderr[-300:])
+    git("remote", "set-url", "origin", str(TMP / "gone.git"), cwd=mine)
+    res = list_in(mine)
+    check("list: when the pull fails, it lists the local notes and says it couldn't fetch",
+          res.returncode == 0 and "Couldn't fetch the latest reviews" in res.stdout and "x/docs" in res.stdout,
+          res.stdout + res.stderr[-300:])
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if failed else 0)
