@@ -8,6 +8,15 @@
     ... --skip-config    keep config.yml as it is
     ... --repair         push a small change to the workflow file, so GitHub Actions registers it
     ... --migrate        upgrade a v4 copy (with its own scripts/) to the Action + plugin
+    python "$HOME/.claude/star-triage.py" token   store the Claude token (--api-key: an API key)
+
+Without questions (the /star-triage:setup skill runs it like this, from Claude Code):
+    ... --new-repo NAME [--folder PARENT]   create a new data repo (default folder: ~/Documents)
+    ... --repo OWNER/NAME [--folder PARENT] use an existing one (cloned first if it isn't here)
+    ... --mode manual|auto|auto-plus  --max N  --obsidian | --no-obsidian  --no-auto-update
+    Without --yes it only prints the plan and changes nothing; with --yes it carries it out.
+    The token is never part of this: setup then prints the one `token` command to run in your
+    own terminal, because the token must never pass through Claude.
 
 How it works: a few questions first (which repo, your projects, the star-triage mode, how the
 workflow uses Claude), then ONE plan and one "Go ahead?". Then it runs straight through:
@@ -42,8 +51,9 @@ import doctor  # noqa: E402
 from doctor import (CONFIG_PATH, ROOT, WORKFLOW_FILE, actions_hint, find_claude, gh_json,  # noqa: E402
                     gh_ready, run, workflow_registered)
 from mode import set_mode_text  # noqa: E402
-from paths import (DEFAULT_MAX_PER_RUN, ENGINE_DIR, MODES, TROUBLESHOOTING_URL, is_data_repo,  # noqa: E402
-                   read_mode, running_as_plugin, safe_console, write_link)
+from paths import (AUTO_PLUS_SENTENCE, DEFAULT_MAX_PER_RUN, ENGINE_DIR, MODES, TROUBLESHOOTING_URL,  # noqa: E402
+                   config_on, is_data_repo, launcher_command, linked_data_root, read_mode, read_simple_config,
+                   running_as_plugin, safe_console, write_link)
 
 TEMPLATE_DIR = ENGINE_DIR / "template"
 WORKFLOW_PATH = f".github/workflows/{WORKFLOW_FILE}"
@@ -53,6 +63,24 @@ OLD_ENGINE_PATHS = ["scripts", "prompts", "docs", "LICENSE", ".claude/skills/sta
 # Set by setup for the copy of itself it starts inside a data repo it has just made.
 STAGE = os.environ.get("STAR_TRIAGE_SETUP_STAGE", "")  # "created" or "approved" (plan said yes)
 STEP_BY_STEP = "--step-by-step" in sys.argv[1:]
+
+
+def flag_value(name: str, argv: list[str] | None = None) -> str | None:
+    """The value of `--name VALUE` or `--name=VALUE`, or None."""
+    argv = sys.argv[1:] if argv is None else argv
+    for i, arg in enumerate(argv):
+        if arg == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+# Answers given as flags (the /star-triage:setup skill): setup then never asks anything.
+VALUE_FLAGS = ("--mode", "--max", "--repo", "--new-repo", "--folder")
+SWITCH_FLAGS = ("--yes", "--obsidian", "--no-obsidian", "--no-auto-update")
+NONINTERACTIVE = any(flag_value(f) is not None for f in VALUE_FLAGS) or bool(set(SWITCH_FLAGS) & set(sys.argv[1:]))
+GO = "--yes" in sys.argv[1:]  # the plan was shown and approved (in the chat)
 
 TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*:")
 
@@ -68,6 +96,8 @@ def step(n: int, title: str) -> None:
 
 
 def ask(question: str, default: str = "") -> str:
+    if NONINTERACTIVE:
+        return default
     hint = f" [{default}]" if default else ""
     try:
         answer = input(f"{question}{hint}: ").strip()
@@ -77,6 +107,8 @@ def ask(question: str, default: str = "") -> str:
 
 
 def yes(question: str, default: bool = True) -> bool:
+    if NONINTERACTIVE:
+        return False  # without a terminal nobody can answer: never treat that as a yes
     hint = "Y/n" if default else "y/N"
     try:
         answer = input(f"{question} [{hint}] ").strip().lower()
@@ -91,6 +123,8 @@ def confirm(question: str) -> bool:
 
 
 def ask_lines(prompt: str) -> list[str]:
+    if NONINTERACTIVE:
+        return []
     say(prompt)
     lines = []
     while True:
@@ -227,17 +261,82 @@ def ask_config(text: str, cfg: dict, gh_login: str | None, owner: str, existing:
 
     say("\nThe star-triage mode: who approves installs? (Not Claude Code's own auto mode.")
     say("Change it later with: python star-triage.py mode)")
-    names = list(MODES)
+    names = list(SETUP_MODE_ORDER)
     for n, name in enumerate(names, 1):
-        say(f"  {n}) {name + ':':11}{MODES[name]}")
+        say(f"  {n}) {name + ':':11}{MODES[name]}" + ("  (recommended)" if name == "auto-plus" else ""))
+        if name == "auto-plus":
+            say(f"     {AUTO_PLUS_SENTENCE}")
     say("High-risk and blocked items are never installed automatically, in any mode.")
     current = read_mode(cfg)
+    # Enter keeps the current mode (manual in a new config): an auto mode is always a real choice.
     pick = ask("Choose 1, 2 or 3", str(names.index(current) + 1))
     chosen = names[int(pick) - 1] if pick in ("1", "2", "3") else current
     # Written only when it is a real choice: keeping the current mode never rewrites an old
     # config that still uses auto_merge.
     if chosen != current or "mode" in cfg:
         text = set_mode_text(text, chosen)
+
+    uses = config_on(cfg, "obsidian")
+    obsidian = yes("\nDo you read your notes in Obsidian? (No: use `python star-triage.py list` instead)",
+                   default=uses)
+    if obsidian != uses or "obsidian" in cfg:
+        text = set_flag_setting(text, "obsidian", obsidian)
+    return text
+
+
+# Setup shows the recommended mode first (mode.py keeps the MODES order).
+SETUP_MODE_ORDER = ("auto-plus", "auto", "manual")
+FLAG_COMMENTS = {
+    "obsidian": ["# Do you read the notes in Obsidian? With false, setup skips the Obsidian tips. Without",
+                 "# Obsidian: python star-triage.py list (or /star-triage:list in Claude Code)."],
+    "auto_update": ["# Keep the star-triage plugin up to date by itself: when your reviews come from a newer",
+                    "# star-triage, it updates itself in the background (at most once a day). false turns it off."],
+}
+
+
+def set_flag_setting(text: str, key: str, value: bool) -> str:
+    """Set a true/false setting. A missing one is added with its comment, above `contexts`."""
+    line = f"{key}: {'true' if value else 'false'}"
+    if block_span(text.splitlines(), key):
+        return set_setting(text, key, [line])
+    return set_setting(text, key, FLAG_COMMENTS.get(key, []) + [line], before="contexts")
+
+
+def flag_problems(argv: list[str] | None = None) -> list[str]:
+    """What is wrong with the answer flags, in plain words (empty when they are fine)."""
+    argv = sys.argv[1:] if argv is None else argv
+    out = []
+    mode, mpr = flag_value("--mode", argv), flag_value("--max", argv)
+    new, repo = flag_value("--new-repo", argv), flag_value("--repo", argv)
+    if mode is not None and mode not in MODES:
+        out.append(f"--mode must be one of: {', '.join(MODES)}")
+    if mpr is not None and not (mpr.isdigit() and 1 <= int(mpr) <= 25):
+        out.append("--max must be a whole number from 1 to 25")
+    if new is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", new):
+        out.append(f"'{new}' is not a valid repo name (letters, numbers, . _ and - only)")
+    if repo is not None and not re.fullmatch(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}", repo):
+        out.append(f"--repo must look like owner/name, not '{repo}'")
+    if new and repo:
+        out.append("give --repo (an existing data repo) or --new-repo (a new one), not both")
+    if {"--obsidian", "--no-obsidian"} <= set(argv):
+        out.append("give --obsidian or --no-obsidian, not both")
+    if "--step-by-step" in argv:
+        out.append("--step-by-step asks questions, so it can't be used with answer flags")
+    return out
+
+
+def config_from_flags(text: str, argv: list[str] | None = None) -> str:
+    """config.yml's new text from the answer flags (nothing is written here)."""
+    argv = sys.argv[1:] if argv is None else argv
+    mode, mpr = flag_value("--mode", argv), flag_value("--max", argv)
+    if mode in MODES:
+        text = set_mode_text(text, mode)
+    if mpr and mpr.isdigit():
+        text = set_setting(text, "max_per_run", [f"max_per_run: {int(mpr)}"])
+    if "--obsidian" in argv or "--no-obsidian" in argv:
+        text = set_flag_setting(text, "obsidian", "--obsidian" in argv)
+    if "--no-auto-update" in argv:
+        text = set_flag_setting(text, "auto_update", False)
     return text
 
 
@@ -454,14 +553,17 @@ def secret_names(repo: str) -> set[str] | None:
     return {s.get("name") for s in found} & {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
 
 
-def set_secret(repo: str, how: str | None = None) -> None:
+def set_secret(repo: str, how: str | None = None, ask_replace: bool | None = None) -> bool:
+    """Store the Claude token (or API key) as a repo secret, through hidden prompts in this
+    terminal. True when a credential is stored (now or before)."""
+    ask_replace = STEP_BY_STEP if ask_replace is None else ask_replace
     have = secret_names(repo) or set()
     if have:
         say(f"Claude credentials already set: {', '.join(sorted(have))}.")
-        if not STEP_BY_STEP or not yes("Replace it?", default=False):
-            if not STEP_BY_STEP:
-                say("  (To replace it: run setup with --step-by-step.)")
-            return
+        if not ask_replace or not yes("Replace it?", default=False):
+            if not ask_replace:
+                say(f"  (To replace it, in your own terminal: {launcher_command('token')})")
+            return True
     how = how or ask_auth()
     where = f"your repo > Settings > Secrets and variables > Actions  (https://github.com/{repo}/settings/secrets/actions)"
     if how == "apikey":
@@ -470,14 +572,14 @@ def set_secret(repo: str, how: str | None = None) -> None:
         say("\nPaste your API key at the hidden prompt below. It goes straight to GitHub.")
         if interactive(["gh", "secret", "set", "ANTHROPIC_API_KEY", "--repo", repo]) == 0:
             say("Secret saved.")
-        else:
-            say(f"That did not work. Add ANTHROPIC_API_KEY by hand at {where}")
-        return
+            return True
+        say(f"That did not work. Add ANTHROPIC_API_KEY by hand at {where}")
+        return False
     claude = find_claude()
     if not claude:
         say("Claude Code is not installed (or not on PATH). Install it, then run this script again:")
         say(f"  {install_hint()}")
-        return
+        return False
     explain("Store your Claude token as a repo secret (CLAUDE_CODE_OAUTH_TOKEN)",
             "the workflow uses it to run Claude for the reviews, on your subscription.", where)
     say("\n" + "!" * 72)
@@ -489,12 +591,12 @@ def set_secret(repo: str, how: str | None = None) -> None:
     say("You then paste it at a hidden prompt, which sends it straight to GitHub as a secret.")
     if STEP_BY_STEP and not yes("Ready to start?"):
         say("Skipped. Run setup again when you're ready.")
-        return
+        return False
     if not STEP_BY_STEP:
         ask("Press Enter to start")
     if interactive([claude, "setup-token"]) != 0:
         say("setup-token did not finish. Run setup again when ready.")
-        return
+        return False
     say("\nNow paste the token (input is hidden) and press Enter:")
     saved = interactive(["gh", "secret", "set", "CLAUDE_CODE_OAUTH_TOKEN", "--repo", repo]) == 0
     say("Secret saved." if saved else f"That did not work. Add CLAUDE_CODE_OAUTH_TOKEN by hand at {where}")
@@ -506,6 +608,39 @@ def set_secret(repo: str, how: str | None = None) -> None:
         say("Clear it yourself before you share anything from this window (cls on Windows, clear elsewhere).")
     say("If the token was ever shared by mistake, make a new one and replace the secret: see")
     say(f"'Claude token was shared' in {TROUBLESHOOTING_URL}")
+    return saved
+
+
+def real_terminal() -> bool:
+    """Both ends are a terminal a person types in and reads. stdin alone is not enough: on
+    Windows the NUL device counts as a tty, and inside Claude Code stdout is always a pipe."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def token_main() -> int:
+    """`star-triage.py token`: the one setup step that stays in the user's own terminal,
+    because `claude setup-token` prints the token and Claude must never see it."""
+    if not real_terminal():
+        say("This step shows your Claude token on screen, so it only runs in your own terminal")
+        say("(PowerShell on Windows, Terminal on Mac), never inside Claude Code. Run there:")
+        say(f"  {launcher_command('token')}")
+        return 1
+    if not gh_ready():
+        say("The GitHub CLI is not logged in. Run `gh auth login`, then this again.")
+        return 1
+    repo = doctor.detect_repo() if is_data_repo(ROOT) else None
+    if not repo:
+        say("No star-triage data repo with a GitHub remote was found. Run /star-triage:setup in Claude")
+        say("Code first (or: " + launcher_command("setup") + ").")
+        return 1
+    say(f"Stores the Claude credential for {repo} as a GitHub secret.")
+    ok = set_secret(repo, "apikey" if "--api-key" in sys.argv[1:] else "oauth", ask_replace=True)
+    if ok:
+        say("\nDone. Go back to Claude Code and say so; setup carries on from there.")
+    return 0 if ok else 1
 
 
 # ----------------------------------------------------------------- first run (UT-9)
@@ -624,6 +759,25 @@ def automatic_installs() -> None:
             say(f"Note: {r.label}. {r.fix}")
 
 
+def plugin_updates() -> None:
+    """Keep the star-triage plugin itself up to date (auto_update in config.yml, default on)."""
+    import sync
+    on = config_on(read_simple_config(CONFIG_PATH), "auto_update")
+    state = sync.marketplace_auto_update(on)
+    if not on:
+        say("Plugin updates: off (auto_update: false in config.yml)."
+            + (" Claude Code's auto-update for the star-triage marketplace is off again too." if state == "changed" else ""))
+        return
+    if state in ("changed", "already"):
+        say("Plugin updates: on. Claude Code updates the star-triage plugin by itself: auto-update is on for")
+        say("its marketplace (`autoUpdate` in ~/.claude/settings.json"
+            + (", backup: settings.json.bak)." if state == "changed" else ")."))
+    else:
+        say("Plugin updates: on. When your reviews come from a newer star-triage, the plugin updates itself")
+        say("when Claude Code starts (at most once a day). Claude Code can do it too: /plugin > Marketplaces >")
+        say("star-triage > Enable auto-update.")
+
+
 # ----------------------------------------------------------------- the data repo
 
 def copy_template(target: Path, overwrite: tuple[str, ...] = ()) -> list[str]:
@@ -642,15 +796,99 @@ def copy_template(target: Path, overwrite: tuple[str, ...] = ()) -> list[str]:
     return written
 
 
+TOKEN_BY_COMMAND = ("then you store your Claude token as a repo secret with one short command in your own "
+                    "terminal (Claude never sees the token)")
+
+
 def new_repo_plan(login: str, name: str, target: Path, auth: str | None) -> list[str]:
+    """auth: 'apikey', 'oauth', or 'command' (the token step is left to `star-triage.py token`)."""
     token = ("store your Anthropic API key as a repo secret (you paste it at a hidden prompt)" if auth == "apikey"
+             else TOKEN_BY_COMMAND if auth == "command"
              else "store your Claude token as a repo secret (`claude setup-token`, then you paste it at a "
                   "hidden prompt)")
     return [f"create the private repo {login}/{name} in {target}, on branch main, with your settings, "
             "and push it",
             "make sure GitHub Actions is on, and let its workflow open pull requests (repo settings)",
             token,
-            "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)"]
+            ("once the token is stored: " if auth == "command" else "")
+            + "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)"]
+
+
+def plan_only(lines: list[str]) -> None:
+    """Without --yes the flag path stops here: the plan, and nothing changed."""
+    say("\nHere is what setup will do:")
+    for line in lines:
+        say(f"  - {line}")
+    say("\nNothing was changed. To do it, run the same command again with --yes.")
+    sys.exit(0)
+
+
+def make_repo(login: dict, name: str, parent: Path, original: str, text: str) -> Path | None:
+    """Create the private GitHub repo, fill it from the template with config.yml's new text,
+    commit and push. The plan has been approved before this is called."""
+    target = parent / name
+    parent.mkdir(parents=True, exist_ok=True)
+    res = run(["gh", "repo", "create", name, "--private", "--clone",
+               "--description", "My GitHub stars, reviewed by star-triage"], cwd=parent, timeout=180)
+    if res.returncode or not target.exists():
+        say("Could not create it: " + (res.stderr.strip() or res.stdout.strip()))
+        return None
+    start_on_main(target)
+    written = copy_template(target)
+    if text != original:
+        save_config(target / "config.yml", original, text)
+    ensure_email(login, target)
+    commit_and_push(target, "Start star-triage", written)
+    return target
+
+
+def flags_target(login: dict) -> tuple[Path, str] | None:
+    """The flag path's (folder, stage): an existing data repo, one cloned or created now (after
+    --yes), or None after saying what is missing. Without --yes, plans that change something
+    on GitHub or on disk are printed and setup stops."""
+    new, want = flag_value("--new-repo"), flag_value("--repo")
+    parent = Path(flag_value("--folder") or Path.home() / "Documents").expanduser()
+    account = f"GitHub account: {login['login']} (to use another: gh auth switch, then run setup again)"
+    if new:
+        target = parent / new
+        if target.exists():
+            say(f"{target} already exists. Choose another name, or another folder with --folder.")
+            return None
+        original = (TEMPLATE_DIR / "config.yml").read_text(encoding="utf-8")
+        text = config_from_flags(original)
+        if not GO:
+            plan_only([account] + new_repo_plan(login["login"], new, target, "command"))
+        made = make_repo(login, new, parent, original, text)
+        return (made, "approved") if made else None
+
+    here = [p for p in (ROOT if is_data_repo(ROOT) else None, linked_data_root()) if p and is_data_repo(p)]
+    if not want:
+        if here:
+            return here[0], ""
+        say("No star-triage data repo on this computer. Say which one to use: --repo OWNER/NAME for one")
+        say("you already have on GitHub, or --new-repo NAME to create a new private one.")
+        return None
+    for folder in here:
+        if (doctor.detect_repo(folder) or "").lower() == want.lower():
+            return folder, ""
+    target = parent / want.split("/", 1)[1]
+    if target.exists():
+        say(f"{target} already exists and is not a clone of {want}. Choose another folder with --folder.")
+        return None
+    if not GO:
+        plan_only([account,
+                   f"clone {want} into {target} and use it as your star-triage data repo on this computer",
+                   "apply your answers to config.yml, then commit and push it (if anything changed)",
+                   "check the repo's GitHub settings (Actions on, workflow may open pull requests) and fix what is off",
+                   "if no Claude token is stored yet: " + TOKEN_BY_COMMAND,
+                   "start the first run (3 repos) if the workflow has never run"])
+    parent.mkdir(parents=True, exist_ok=True)
+    res = run(["gh", "repo", "clone", want, str(target)], cwd=parent, timeout=300)
+    if res.returncode or not is_data_repo(target):
+        say(f"Could not use {want}: " + (res.stderr.strip() or res.stdout.strip()
+                                         or "it has no config.yml and tracker/, so it is not a star-triage data repo."))
+        return None
+    return target, "approved"
 
 
 def create_data_repo(login: dict | None) -> tuple[Path, str | None] | None:
@@ -687,19 +925,8 @@ def create_data_repo(login: dict | None) -> tuple[Path, str | None] | None:
             say("Nothing was changed.")
             return None
 
-    parent.mkdir(parents=True, exist_ok=True)
-    res = run(["gh", "repo", "create", name, "--private", "--clone",
-               "--description", "My GitHub stars, reviewed by star-triage"], cwd=parent, timeout=180)
-    if res.returncode or not target.exists():
-        say("Could not create it: " + (res.stderr.strip() or res.stdout.strip()))
-        return None
-    start_on_main(target)
-    written = copy_template(target)
-    if text != original:
-        save_config(target / "config.yml", original, text)
-    ensure_email(login, target)
-    commit_and_push(target, "Start star-triage", written)
-    return target, auth
+    made = make_repo(login, name, parent, original, text)
+    return (made, auth) if made else None
 
 
 def confirm_existing(repo: str | None, login: dict | None) -> str:
@@ -765,6 +992,8 @@ def find_or_make_data_repo(login: dict | None) -> tuple[Path, str] | None:
     confirmed, 'created' or 'approved' for one made just now."""
     if STAGE:
         return ROOT, STAGE
+    if NONINTERACTIVE:
+        return flags_target(login)
     if is_data_repo(ROOT):
         choice = confirm_existing(doctor.detect_repo(), login)
         if choice == "use":
@@ -825,11 +1054,14 @@ def existing_plan(repo: str, use_gh: bool, config_changed: bool, launcher_old: b
                  "what is off")
     if secret:
         lines.append(f"keep the Claude credentials already stored ({', '.join(sorted(secret))})")
+    elif auth == "command":
+        lines.append(TOKEN_BY_COMMAND)
     else:
         lines.append("store your " + ("Anthropic API key" if auth == "apikey" else "Claude token")
                      + " as a repo secret (you paste it at a hidden prompt)")
     if never_ran:
-        lines.append("wait until GitHub Actions has registered the workflow, then start the first run (3 repos)")
+        lines.append(("once the token is stored: " if auth == "command" and not secret else "")
+                     + "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)")
     return lines
 
 
@@ -855,11 +1087,20 @@ def repair(repo: str) -> None:
 def main() -> None:
     safe_console()
     args = set(sys.argv[1:])
+    if "--token" in args:
+        sys.exit(token_main())
     if "--check" in args:
         sys.exit(doctor.report(doctor.check_local()))
-    if not sys.stdin.isatty():
-        sys.exit("Setup asks questions, so it needs a terminal you can type in. Open a terminal window "
-                 "and run it there yourself (to only check, add --check).")
+    if NONINTERACTIVE:
+        problems = flag_problems()
+        if problems:
+            for problem in problems:
+                say(problem)
+            sys.exit(2)
+    elif not real_terminal():
+        sys.exit("Setup asks questions, so it needs a terminal you can type in. In Claude Code, run "
+                 "/star-triage:setup instead. Or open a terminal window and run it there yourself (to only "
+                 "check, add --check).")
 
     if not STAGE:
         say("star-triage setup. A few questions, then one plan to approve. Safe to run again.")
@@ -879,6 +1120,11 @@ def main() -> None:
     login = gh_json("api", "user") if use_gh else None
     if not STAGE:
         say(f"GitHub CLI: {'logged in as ' + login['login'] if login else 'not available'}")
+    if NONINTERACTIVE and not login:
+        if not doctor.gh_installed():
+            sys.exit("The GitHub CLI is not installed. Install it (Windows: winget install --id GitHub.cli, "
+                     "Mac: brew install gh, others: https://cli.github.com), then run `gh auth login` in a terminal.")
+        sys.exit("The GitHub CLI is not logged in. Run `gh auth login` in a terminal, then setup again.")
 
     found = find_or_make_data_repo(login)
     if not found:
@@ -910,21 +1156,31 @@ def main() -> None:
         launcher.read_bytes().replace(b"\r\n", b"\n") != shipped.read_bytes().replace(b"\r\n", b"\n")
     original, cfg = read_config(CONFIG_PATH)
     text = original
-    if not approved and "--skip-config" not in args:
+    if NONINTERACTIVE:
+        text = config_from_flags(original)
+    elif not approved and "--skip-config" not in args:
         step(2, "Your settings (config.yml)")
         text = ask_config(original, cfg, login["login"] if login else None, repo.split("/")[0],
                           existing=not STAGE)
         if STEP_BY_STEP:
             save_config(CONFIG_PATH, original, text)
             original = text = CONFIG_PATH.read_text(encoding="utf-8")
-    auth = os.environ.get("STAR_TRIAGE_SETUP_AUTH") or None
+    auth = "command" if NONINTERACTIVE else os.environ.get("STAR_TRIAGE_SETUP_AUTH") or None
     secret = secret_names(repo) if use_gh else None
     never_ran = use_gh and gh_json("run", "list", "--repo", repo, "--workflow", WORKFLOW_FILE,
                                    "--limit", "1", "--json", "url") in ([], None)
     if use_gh and not secret and not auth and not STEP_BY_STEP:
         auth = ask_auth()
     if not approved and not STEP_BY_STEP:
-        if not show_plan(existing_plan(repo, use_gh, text != original, launcher_old, secret, never_ran, auth)):
+        lines = existing_plan(repo, use_gh, text != original, launcher_old, secret, never_ran, auth)
+        if NONINTERACTIVE:
+            owner, who = repo.split("/")[0], login["login"]
+            account = f"use {repo} in {ROOT}, as GitHub account {who}"
+            if owner.lower() != who.lower():
+                account += f" (careful: the repo belongs to {owner}; settings and secrets need {owner}'s login)"
+            if not GO:
+                plan_only([account] + lines)
+        elif not show_plan(lines):
             say("Nothing was changed.")
             return
 
@@ -943,9 +1199,20 @@ def main() -> None:
         enable_actions(repo)
         allow_pull_requests(repo)
         step(5, "Claude token (stored as a GitHub secret)")
-        set_secret(repo, auth)
+        if NONINTERACTIVE:
+            stored = bool(secret)
+            if stored:
+                say(f"Claude credentials already set: {', '.join(sorted(secret))}.")
+            else:
+                say("Not stored yet. This is the one step for your own terminal, because the token must never")
+                say("pass through Claude. Run this there (PowerShell on Windows, Terminal on Mac):")
+                say(f"  {launcher_command('token')}")
+        else:
+            stored = set_secret(repo, auth)
         step(6, "First run")
-        if never_ran or STEP_BY_STEP:
+        if NONINTERACTIVE and not stored:
+            say("The first run starts once the token is stored: run setup again then (/star-triage:setup does it).")
+        elif never_ran or STEP_BY_STEP:
             first_run(repo)
         else:
             say("The workflow has run before, so no first run is started. " + actions_hint(repo).split(" If ")[0])
@@ -954,12 +1221,18 @@ def main() -> None:
 
     step(7, "Automatic installs on this computer")
     automatic_installs()
+    plugin_updates()
 
-    step(8, "Reading your notes in Obsidian")
-    say(f"You need Obsidian 1.9 or newer (the table views use Bases). Open this folder as a vault: {ROOT}")
-    say("Then open tracker/Star Triage.base. Notes arrive with `git pull`, after the first run has")
-    say("finished and its pull request is merged. For new notes to appear on their own, install the")
-    say("community plugin 'Git' (by Vinzent) and set 'Auto pull interval' to 10 minutes.")
+    if config_on(read_simple_config(CONFIG_PATH), "obsidian"):
+        step(8, "Reading your notes in Obsidian")
+        say(f"You need Obsidian 1.9 or newer (the table views use Bases). Open this folder as a vault: {ROOT}")
+        say("Then open tracker/Star Triage.base. Notes arrive with `git pull`, after the first run has")
+        say("finished and its pull request is merged. For new notes to appear on their own, install the")
+        say("community plugin 'Git' (by Vinzent) and set 'Auto pull interval' to 10 minutes.")
+    else:
+        step(8, "Reading your reviews")
+        say("Your reviews, newest first: /star-triage:list in Claude Code, or python star-triage.py list")
+        say("(--waiting: only what needs you). Approve one: python star-triage.py approve owner/name")
 
     step(9, "Final check")
     doctor.report(doctor.check_local())

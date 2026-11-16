@@ -11,7 +11,10 @@ One setting decides who approves installs:
 - `auto`: Install safe things by themselves (Low risk only)
 - `auto-plus`: Install safe and medium-risk things by themselves (Low and Medium)
 
-High-risk and blocked items are never installed automatically, in any mode.
+High-risk and blocked items are never installed automatically, in any mode. In the auto modes an
+item installs once its review is `auto_wait_hours` old (1 h in new setups; older configs keep
+their value), at most `auto_daily_limit` a day (5). To skip the wait for what is approved now:
+/star-triage:sync now.
 
 Every command below is `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<script>" <arguments>` (on Windows
 `python`, or `py`). The scripts find the user's data repo by themselves.

@@ -23,8 +23,17 @@ install_scope: user
 
 # star-triage auto and auto-plus modes only. An item installs by itself once its review is this many hours old (time
 # to untick it or pause), and at most this many items install per day on one computer.
-auto_wait_hours: 6
+# Skip the wait for what is approved now: /star-triage:sync now (or python star-triage.py sync --now).
+auto_wait_hours: 1
 auto_daily_limit: 5
+
+# Do you read the notes in Obsidian? With false, setup skips the Obsidian tips. Without
+# Obsidian: python star-triage.py list (or /star-triage:list in Claude Code).
+obsidian: true
+
+# Keep the star-triage plugin up to date by itself: when your reviews come from a newer
+# star-triage, it updates itself in the background (at most once a day). false turns it off.
+auto_update: true
 
 # Optional: your projects. Each name becomes a "relevant_to" label on notes. Add your own
 # above General, each with a name and a one-line description, or leave just General.

@@ -14,6 +14,14 @@ whenever Claude Code starts; this skill is for doing it now, or checking what ha
 All the work is done by `${CLAUDE_PLUGIN_ROOT}/scripts/sync.py`. It finds the data repo by
 itself (the current folder if it is one, otherwise the one linked by setup).
 
+**`/star-triage:sync now`** (the arguments say `now`, or the user asks to install what waits
+right away): the user's own command to skip the safety delay of the auto modes. Run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync.py" --now` (on Windows `python`, or `py`) once, with
+no other flags, and summarise what it printed: what was installed, what waits for tomorrow
+(daily limit), and the High-risk or blocked items it left alone, with the terminal command it
+gives for those. It asks nothing and never installs a High-risk (in auto modes) or blocked item.
+Then stop; skip the steps below.
+
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sync.py" --status` (on Windows `python`, or `py`;
    use the one that works in every command below) and summarise it. If it says no
    data repo was found, run the /star-triage:setup skill's steps instead.

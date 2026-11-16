@@ -125,6 +125,27 @@ section is written so it can be used as-is in a launch post or README.
   star-triage mode, subscription or API key), then shows everything it will do in one list and
   asks "Go ahead? [Y/n]" once. Then it runs straight through. `--step-by-step` asks before
   each step instead.
+- **Setup inside Claude Code (5.5.0).** `/star-triage:setup` asks four questions in the chat
+  (star-triage mode, repos per run, which data repo, Obsidian or not), shows setup's plan once,
+  asks once, and runs `setup.py` itself with flags (`--repo`/`--new-repo`, `--mode`, `--max`,
+  `--obsidian`/`--no-obsidian`). Without `--yes` the flags only print the plan, so nothing on
+  GitHub changes before you say yes. The terminal flow still works for people who run it by hand.
+- **The token is the only terminal step (5.5.0).** `python "$HOME/.claude/star-triage.py" token`
+  runs `claude setup-token` and the hidden `gh secret set` prompt, with the warnings and the
+  clear-screen offer. It refuses to run unless both its input and output are a real terminal,
+  so it can't run inside Claude or into a log. The skill then checks the secret by name only
+  (`gh secret list`) and starts the first run.
+- **Missing GitHub CLI: one command (5.5.0).** If `gh` isn't installed or logged in, the skill
+  says the one command that fixes it and stops, instead of a half-finished setup.
+- **Plugin updates itself (5.5.0).** When `installs.json` says your reviews come from a newer
+  star-triage, the startup hook runs the two update commands in the background, at most once
+  a day, and says "restart Claude Code to use it". `auto_update: false` turns it off. Never
+  with `--yes`.
+- **Claude Code's own auto-update, turned on the documented way (5.5.0).** Setup sets
+  `autoUpdate` on the star-triage entry of `extraKnownMarketplaces` in `~/.claude/settings.json`,
+  the key the Claude Code docs name as taking priority over the `/plugin` toggle. Only that
+  field, only when the entry exists, with a backup. This is the one place star-triage edits a
+  Claude Code settings file, because no CLI command or flag can do it.
 - **Every GitHub setting explained (5.4.0).** For each setting it turns on, setup prints what it
   is, why star-triage needs it, and where it lives (*Settings > Actions > General > Workflow
   permissions*), so you can check or undo it later.
@@ -195,6 +216,16 @@ section is written so it can be used as-is in a launch post or README.
   the older `auto_merge` key, which is still read: `notes` is manual, `low-risk` is auto, and
   `mode` wins when both are set. One function reads it for the workflow, setup, the doctor
   and the sync.
+- **auto-plus is the recommended choice (5.5.0).** Setup lists it first, marked recommended,
+  with one sentence on what it does. It is still a choice: Enter keeps the current mode, a
+  config without `mode:` still means manual, and the skill never picks for you.
+- **A 1-hour wait for new setups (5.5.0).** New configs get `auto_wait_hours: 1` (was 6).
+  Existing configs keep what they say; a config with no such line keeps the old 6.
+- **Install now (5.5.0).** `/star-triage:sync now` or `python3 star-triage.py sync --now`
+  installs what is approved right away. It skips only the safety delay: the daily limit,
+  pause, and the High-risk and blocked rules stay, and it is recorded in the history like an
+  automatic install, so `undo` covers it. When something waits, the start line ends with
+  "(install now: /star-triage:sync now)".
 - **Four ways to change it, one result.** `python3 star-triage.py mode` (a 1/2/3 menu),
   `mode auto`, the `/star-triage:mode` skill ("turn on auto mode"), and the same question in
   setup. Each one edits `config.yml`, commits "Switch star-triage to <mode>" and pushes; a
@@ -208,7 +239,8 @@ section is written so it can be used as-is in a launch post or README.
   the background sync never installs a High-risk or blocked item. A blocked item still needs
   a typed `install`.
 - **A veto window.** In auto modes an item installs only once its review is `auto_wait_hours`
-  old (default 6). That leaves time to untick `approve` on the note from a phone, or to pause.
+  old (1 h in new configs, 6 h in older ones). That leaves time to untick `approve` on the
+  note from a phone, or to pause.
   Items that aren't due wait for a later Claude Code start.
 - **A daily cap.** At most `auto_daily_limit` items (default 5) install per day on one
   computer, so a burst of stars or a bad day at a registry can't install a pile at once.
@@ -221,8 +253,23 @@ section is written so it can be used as-is in a launch post or README.
   later review is recorded as "removed: downgraded by re-review".
 - **One line at startup.** In auto modes the Claude Code start message is a single line that
   names what waits and until when, in local time, for example
-  `star-triage auto-plus: installed context7; ponytail installs after 11:52 (6 h safety delay)`.
+  `star-triage auto-plus: installed context7; ponytail installs after 11:52 (1 h safety delay) (install now: /star-triage:sync now)`.
 - **Called "star-triage mode".** Messages and docs say "star-triage mode", so it isn't confused
   with Claude Code's own auto mode (a permission mode).
 - **Nobody is switched silently.** The default stays manual, an existing config keeps its
   meaning, and setup writes `mode` only when you pick a different one.
+
+## 9. No Obsidian needed
+
+- **One table in the terminal or the chat (5.5.0).** `python3 star-triage.py list` (or
+  `/star-triage:list`) shows every review, newest first: repo, kind, verdict, risk, install
+  status (installed, installs after HH:MM, waiting for you, blocked, nothing to install) and the
+  first "When you'd use it" example. `--waiting` keeps only what needs you; `--repo owner/name`
+  prints the summary, all examples and the security findings.
+- **Approve from the command line (5.5.0).** `approve owner/name` and `unapprove owner/name`
+  make the same one-line edit as the Obsidian checkbox, so every rule stays the same: a blocked
+  item still needs `sync` in your own terminal and a typed `install`, and High-risk items never
+  install by themselves in the auto modes. Claude can run them when you say "approve ponytail".
+- **Obsidian is optional (5.5.0).** Setup asks; with `obsidian: false` it skips the Obsidian
+  tips and points to `list`, and sync's "waits for you" hints say `approve owner/name` instead
+  of "tick approve in Obsidian".

@@ -7,6 +7,7 @@ FAKE_WF_AFTER=N: GitHub Actions lists the star-triage workflow only after N call
   `gh api repos/<repo>/actions/workflows` (0 = at once). Counted in $FAKE_GH_DIR/wf_calls.
 FAKE_RUN=fail makes `gh workflow run` fail with GitHub's HTTP 404.
 FAKE_PR_PERM=off: the repo does not yet let Actions open pull requests.
+FAKE_SECRET=1: the repo has CLAUDE_CODE_OAUTH_TOKEN (names only, as `gh secret list` gives them).
 """
 import json
 import os
@@ -58,6 +59,8 @@ if a[:1] == ["api"] and len(a) == 2:
              "can_approve_pull_request_reviews": os.environ.get("FAKE_PR_PERM") != "off"})
     if path.startswith("repos/"):
         out({"full_name": path[6:]})
+if a[:2] == ["secret", "list"] and os.environ.get("FAKE_SECRET") == "1":
+    out([{"name": "CLAUDE_CODE_OAUTH_TOKEN"}])
 if a[:2] in (["secret", "list"], ["run", "list"]):
     out([])
 if a[:2] == ["repo", "view"]:

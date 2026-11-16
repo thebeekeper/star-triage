@@ -10,7 +10,9 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
 - **This repo is the engine.** One copy of the code, used two ways:
   - `action.yml`: composite GitHub Action that a user's data repo calls as `thebeekeper/star-triage@v1`.
   - Claude Code plugin (repo root = plugin root): `.claude-plugin/plugin.json` + `marketplace.json`
-    (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`), `skills/setup|sync|mode|triage`.
+    (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`; it also starts the
+    plugin's self-update when installs.json's engine_version is newer), `skills/setup|sync|mode|list|triage`.
+  - `scripts/reviews.py`: `list`, `approve`, `unapprove` (the review table without Obsidian).
 - **User data repo** (skeleton in `template/`): `config.yml`, `tracker/` notes, `installs.json`,
   `.claude-plugin/marketplace.json` (their reviewed plugins), `star-triage.py` launcher, tiny workflow.
 - `scripts/paths.py` finds the data repo: `STAR_TRIAGE_DATA` → cwd → engine dir (old layout) →
@@ -25,13 +27,21 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
 - **Never make Claude a contributor.** Don't add `Co-Authored-By: Claude` or any AI trailer,
   don't commit as Claude. The owner (thebeekeper, public name "Bee") commits and pushes himself.
   Prepare changes; let him commit unless he explicitly asks you to.
-- **Never ask for, read, print or store tokens or API keys.** Secrets go through `setup.py` in
-  his own terminal (`claude setup-token` → `gh secret set` hidden prompt).
+- **Never ask for, read, print or store tokens or API keys.** Secrets go through
+  `star-triage.py token` (`setup.py --token`) in the user's own terminal (`claude setup-token` →
+  `gh secret set` hidden prompt); it refuses unless stdin and stdout are a real terminal. The
+  setup skill runs `setup.py` with flags (plan first, `--yes` only after the user's yes) and
+  never runs the token step.
 - **Keep the approval gates.** Default `mode: manual`; installs need a merge or an
   `approve` tick; blocked items need a typed `install`; sync never passes `--yes`. Auto modes
   (`auto`, `auto-plus`) are opt-in, never cover High-risk or blocked items, and keep the safety
   delay, the daily limit, pause, undo and history. `paths.read_mode` is the only place the
-  setting (and the older `auto_merge`) is read.
+  setting (and the older `auto_merge`) is read. Setup lists auto-plus first as recommended, but
+  Enter keeps the current mode and a config without `mode:` is manual. Only an explicit user
+  command skips the delay (`sync --now`); it keeps everything else and is recorded in the history.
+- **Claude Code's settings.json is touched in one place only:** setup sets the documented
+  `autoUpdate` field on the existing `extraKnownMarketplaces.star-triage` entry (with a backup).
+  `auto_update: false` in config.yml turns that and the plugin's self-update off.
 - **Claude proposes, code decides.** Anything security-relevant (risk floor, install specs,
   registry checks, validation) is decided by plain code from the trusted scan copy, never from
   text Claude wrote.
@@ -49,6 +59,8 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
 python -m pyflakes scripts/*.py template/star-triage.py
 bash tests/test_publish.sh
 python tests/test_auto_mode.py              # also run by test_publish.sh
+python tests/test_setup.py                  # also run by test_publish.sh
+python tests/test_reviews.py                # also run by test_publish.sh
 python tests/test_install_plans.py          # network
 claude plugin validate .
 actionlint template/.github/workflows/star-triage.yml

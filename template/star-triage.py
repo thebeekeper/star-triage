@@ -3,13 +3,17 @@
 (on Windows: python star-triage.py <command>)
 
     sync      install, update or remove what you approved
-              (--dry-run, --status, --uninstall NAME, --prune)
+              (--now skips the safety delay; --dry-run, --status, --uninstall NAME, --prune)
+    list      your reviewed repos, newest first (--waiting, --repo owner/name)
+    approve   owner/name: approve an install, as ticking `approve` in Obsidian does
+    unapprove owner/name: untick it again (an installed item is then removed)
     mode      who approves installs: manual, auto or auto-plus (no word = show a menu)
     pause     stop everything automatic on this computer;  resume  starts it again
     undo      remove the most recent automatic batch and untick its notes
     history   the last 20 automatic installs and removals
     doctor    check your setup and say how to fix anything wrong
-    setup     guided setup (safe to run again)
+    setup     guided setup (safe to run again; /star-triage:setup in Claude Code does the same)
+    token     store your Claude token as a GitHub secret (run it in your own terminal only)
 
 The star-triage code lives in its Claude Code plugin; this file only finds it. The plugin also
 keeps a copy of this file at ~/.claude/star-triage.py, so this works from any folder:
@@ -33,7 +37,9 @@ HERE = Path(__file__).resolve().parent
 # command -> (script in the plugin, arguments put in front of yours)
 COMMANDS = {"sync": ("sync.py", []), "doctor": ("doctor.py", []), "setup": ("setup.py", []),
             "mode": ("mode.py", []), "pause": ("sync.py", ["--pause"]), "resume": ("sync.py", ["--resume"]),
-            "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"])}
+            "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"]),
+            "token": ("setup.py", ["--token"]), "list": ("reviews.py", ["list"]),
+            "approve": ("reviews.py", ["approve"]), "unapprove": ("reviews.py", ["unapprove"])}
 
 
 def is_engine(path: Path) -> bool:

@@ -46,8 +46,25 @@ MODE_RISKS = {"manual": (), "auto": ("Low",), "auto-plus": ("Low", "Medium")}
 MODE_SHORT = {"manual": "you approve every install",
               "auto": "installs Low-risk items by themselves",
               "auto-plus": "installs Low and Medium-risk items by themselves"}
+# Used only when config.yml has no auto_wait_hours line (configs from before 5.2): new configs
+# get `auto_wait_hours: 1` from the template, and an existing config keeps what it says.
 DEFAULT_WAIT_HOURS = 6
+NEW_CONFIG_WAIT_HOURS = 1
 DEFAULT_DAILY_LIMIT = 5
+# Said once, in setup and the setup skill, next to auto-plus (the recommended mode).
+AUTO_PLUS_SENTENCE = ("Low and Medium-risk tools install by themselves after a short safety delay, at most "
+                      "5 a day; High-risk and blocked items always wait for you.")
+NOW_HINT = "(install now: /star-triage:sync now)"
+
+
+def config_on(cfg: dict, key: str, default: bool = True) -> bool:
+    """A yes/no setting such as `obsidian` or `auto_update`, from PyYAML or read_simple_config."""
+    raw = cfg.get(key)
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("false", "no", "off", "0")
 
 
 def read_mode(cfg: dict) -> str:

@@ -202,9 +202,11 @@ def test_hook_message() -> None:
     run("--background")
     at = (sync.reviewed_time(later) + dt.timedelta(hours=6)).astimezone()
     when = at.strftime("%H:%M") if at.date() == dt.datetime.now().astimezone().date() else at.strftime("%a %H:%M")
-    want = f"star-triage auto: installed ccusage, context7; later installs after {when} (6 h safety delay)"
+    want = (f"star-triage auto: installed ccusage, context7; later installs after {when} (6 h safety delay) "
+            "(install now: /star-triage:sync now)")
     line = hook()
-    check("hook: one line says what the star-triage mode did, and what waits until when (local time)", line == want)
+    check("hook: one line says what the star-triage mode did, what waits until when (local time), and how to "
+          "install it now", line == want)
     if line != want:
         print("     got:", repr(line), "\n     want:", repr(want))
 
@@ -289,11 +291,104 @@ def test_mode_command() -> None:
           and git("log", "-1", "--format=%s") == "Switch star-triage to auto")
 
 
+def test_now() -> None:
+    """sync --now skips only the safety delay."""
+    fresh = [item(n, hours=0.5) for n in ("n1", "n2", "n3")]
+    world("mode: auto-plus\nauto_wait_hours: 6\nauto_daily_limit: 2\n",
+          fresh + [item("nhigh", hours=0.5, risk="High"), item("nblocked", hours=0.5, status="blocked", blocked="t"),
+                   item("nnot", hours=0.5, approved=False)])
+    run("--background")
+    check("--now: the background run still waits for the delay", installed() == [])
+    run("--now", "--no-pull")
+    check("--now: installs approved items at once, up to the daily limit",
+          installed() == ["x/n1", "x/n2"])
+    check("--now: never High risk, blocked or unapproved items", not {"x/nhigh", "x/nblocked", "x/nnot"} & set(installed()))
+    rows = sync.history_read()
+    check("--now: recorded in the history as automatic, so undo and the daily limit count it",
+          [r["key"] for r in rows] == ["x/n1", "x/n2"] and all(r["auto"] and r["now"] for r in rows))
+    calls.clear()
+    run("--now", "--no-pull")
+    check("--now: a second run on the same day stays within the daily limit", installed() == [])
+    sync.input = lambda prompt="": "y"
+    run("--undo")
+    check("--now: undo removes what it installed", sorted(calls) == [("remove", "x/n1"), ("remove", "x/n2")])
+
+    world("mode: auto\nauto_wait_hours: 6\n", [item("p1", hours=0.5)])
+    run("--pause")
+    run("--now", "--no-pull")
+    check("--now: does nothing while paused", installed() == [])
+    run("--resume")
+    run("--now", "--dry-run", "--no-pull")
+    check("--now --dry-run: records nothing as installed", not sync.load_json(sync.STATE_PATH, {})
+          and not sync.history_read())
+
+
+def test_self_update() -> None:
+    """The plugin updates itself when the reviews come from a newer star-triage: at most once a day."""
+    started = []
+    real = sync.start_background
+    sync.start_background = lambda flag="--background": started.append(flag)
+    world("mode: manual\n", [])
+    old = "star-triage on this computer is 5.4.1, your reviews use 9.9.9"
+    try:
+        t = 1_000_000.0
+        line = sync.self_update_message(old, now=t, allowed=False)
+        check("self-update: off (auto_update false, or not the plugin): the update commands instead",
+              started == [] and line.startswith(old) and "claude plugin update star-triage@star-triage" in line)
+        line = sync.self_update_message(old, now=t, allowed=True)
+        check("self-update: starts the background update and says to restart",
+              started == ["--self-update"]
+              and line == "updating star-triage to 9.9.9 in the background; restart Claude Code to use it")
+        line = sync.self_update_message(old, now=t + 3600, allowed=True)
+        check("self-update: not again within a day", started == ["--self-update"] and "updating star-triage" in line)
+        sync.self_update_message(old, now=t + 25 * 3600, allowed=True)
+        check("self-update: tries again after a day", started == ["--self-update"] * 2)
+        last = sync.load_json(sync.SELF_UPDATE_PATH, {})
+        sync.save_json(sync.SELF_UPDATE_PATH, {**last, "done": True, "ok": True, "shown": False})
+        line = sync.self_update_message(old, now=t + 26 * 3600, allowed=True)
+        check("self-update: done, this session is still old: 'updated star-triage to X; restart'",
+              line == "updated star-triage to 9.9.9; restart Claude Code to use it" and len(started) == 2)
+        sync.save_json(sync.SELF_UPDATE_PATH, {**last, "done": True, "ok": True, "shown": False})
+        check("self-update: done and loaded: said once", sync.self_update_message(None, now=t) == "updated star-triage to 9.9.9."
+              and sync.self_update_message(None, now=t) == "")
+        sync.save_json(sync.SELF_UPDATE_PATH, {**last, "done": True, "ok": False, "shown": False})
+        line = sync.self_update_message(old, now=t + 26 * 3600, allowed=True)
+        check("self-update: a failure is shown once, with the commands to run by hand",
+              "could not update itself" in line and "claude plugin marketplace update star-triage" in line)
+        check("self-update: auto_update false in config.yml is the off switch",
+              paths.config_on(paths.read_simple_config(DATA / "config.yml"), "auto_update")
+              and not paths.config_on({"auto_update": "false"}, "auto_update"))
+    finally:
+        sync.start_background = real
+
+    settings = CLAUDE / "settings.json"
+    entry = {"source": {"source": "git", "url": "https://github.com/thebeekeper/star-triage.git"}}
+    settings.write_text(json.dumps({"model": "x", "extraKnownMarketplaces": {"star-triage": entry}}), encoding="utf-8")
+    check("marketplace auto-update: turned on in the documented settings key, with a backup",
+          sync.marketplace_auto_update(True) == "changed"
+          and json.loads(settings.read_text(encoding="utf-8"))["extraKnownMarketplaces"]["star-triage"]["autoUpdate"] is True
+          and json.loads(settings.read_text(encoding="utf-8"))["model"] == "x"
+          and (CLAUDE / "settings.json.bak").exists())
+    check("marketplace auto-update: a second time changes nothing", sync.marketplace_auto_update(True) == "already")
+    check("marketplace auto-update: auto_update false turns it off again", sync.marketplace_auto_update(False) == "changed"
+          and json.loads(settings.read_text(encoding="utf-8"))["extraKnownMarketplaces"]["star-triage"]["autoUpdate"] is False)
+    settings.write_text(json.dumps({"extraKnownMarketplaces": {}}), encoding="utf-8")
+    check("marketplace auto-update: a marketplace settings don't declare is left alone",
+          sync.marketplace_auto_update(True) == "not-declared"
+          and settings.read_text(encoding="utf-8") == json.dumps({"extraKnownMarketplaces": {}}))
+    settings.write_text("{not json", encoding="utf-8")
+    check("marketplace auto-update: a broken settings.json is not touched",
+          sync.marketplace_auto_update(True) == "unreadable" and settings.read_text(encoding="utf-8") == "{not json")
+    settings.unlink()
+
+
 try:
     test_mapping()
     test_wait_cap_pause()
     test_history_undo()
     test_hook_message()
+    test_now()
+    test_self_update()
     test_mode_command()
 finally:
     shutil.rmtree(TMP, ignore_errors=True)

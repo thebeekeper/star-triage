@@ -72,8 +72,10 @@ to pause (`gh workflow disable star-triage.yml`).
 ### Setup says it "needs a terminal you can type in"
 
 Setup was started without a keyboard attached (from Claude Code, a script, or with input piped
-in), so it stops instead of answering its own questions. Open a terminal window and run the same
-command there. `--check` still works anywhere.
+in), so it stops instead of answering its own questions. Inside Claude Code, use
+`/star-triage:setup`: it asks the questions in the chat and runs setup with flags
+(`--repo`/`--new-repo`, `--mode`, `--max`, `--obsidian`/`--no-obsidian`, then `--yes`). Or open a
+terminal window and run the same command there. `--check` still works anywhere.
 
 ### Setup says "This folder is the star-triage engine" or "already has files"
 
@@ -91,9 +93,10 @@ Nothing appears while you paste; that is normal. Clear the terminal afterwards
 
 ### `/star-triage:setup` says "Not set up yet"
 
-That is the normal state before setup has run, not an error. Run the one command it prints, in
-a terminal (not inside Claude Code): type `/exit`, or open another terminal window. Before
-5.4.0 this showed as a red "Exit code 1" and "[FAIL] No star-triage data repo found".
+That is the normal state before setup has run, not an error. Since 5.5.0 the skill carries on
+by itself: four questions, one plan, then setup runs from the chat. Only the token step is left
+for a terminal. Before 5.4.0 this showed as a red "Exit code 1" and "[FAIL] No star-triage data
+repo found".
 
 ### The setup command has a long path with a version number in it
 
@@ -147,6 +150,33 @@ Nothing breaks: the workflow runs on your repo's default branch, whatever its na
 5.4.0 and later starts new repos on `main`. To rename an old one: on GitHub, *Settings >
 General > Default branch*, rename it to `main`; then in your data repo run
 `git branch -m master main`, `git fetch origin`, `git branch -u origin/main main`.
+
+### `/star-triage:setup` asks me to run a `token` command in a terminal
+
+That is the one step setup can't do from the chat: `claude setup-token` prints your Claude
+token, and the token must never pass through Claude. In PowerShell (Windows) or Terminal (Mac),
+not in Claude Code and not with `!`, run:
+
+```
+python "$HOME/.claude/star-triage.py" token      # Windows
+python3 "$HOME/.claude/star-triage.py" token     # Mac and Linux
+```
+
+It logs you in through the browser, shows the token, and you paste it at a hidden prompt that
+sends it straight to GitHub. It offers to clear the screen afterwards. Using an Anthropic API
+key instead: add `--api-key`. Then tell Claude you're done; the skill checks the secret by name
+and starts the first run.
+
+### `token` says it "only runs in your own terminal"
+
+It was started from Claude Code, a script, or with its output redirected. It refuses so the
+token can't end up in a chat or a log. Run it in a terminal window you type in.
+
+### Setup printed a plan and "Nothing was changed"
+
+Run with answer flags (`--repo`, `--new-repo`, `--mode`, `--max`, `--obsidian`), setup only shows
+its plan. That's how `/star-triage:setup` shows it to you in the chat. The same command with
+`--yes` carries it out. A message like `--mode must be one of` names a flag that was wrong.
 
 ## Installing Claude Code (needed once, for the token)
 
@@ -419,8 +449,11 @@ Then restart Claude Code. The doctor says when a newer version is out.
 
 ### `star-triage on this computer is X, your reviews use Y`
 
-The Action on GitHub (`@v1`) updates itself; the plugin on your computer stays on its version
-until you update it. When they differ, the two can disagree about what's approved. Update, in
+The Action on GitHub (`@v1`) updates itself; the plugin on your computer is one version behind
+until it updates. Since 5.5.0 it updates itself when Claude Code starts (you see `updating
+star-triage to X.Y.Z in the background; restart Claude Code to use it`), so you see this message
+only when that is off (`auto_update: false` in config.yml), was already tried today, or failed
+(`star-triage could not update itself`, details in `.star-triage/sync.log`). Update by hand, in
 a terminal:
 
 ```
@@ -430,13 +463,17 @@ claude plugin update star-triage@star-triage
 
 Then restart Claude Code.
 
-### The start message says `X installs after 11:52 (6 h safety delay)`
+### The start message says `X installs after 11:52 (1 h safety delay)`
 
 That's your star-triage mode (auto or auto-plus) at work, not Claude Code's own auto mode. The
-item was reviewed less than `auto_wait_hours` ago (default 6); it installs the first time
-Claude Code starts after that time (your computer's local time). To stop it, untick `approve`
-on its note, or run `python3 star-triage.py pause`. "wait for tomorrow (daily limit N)" means
-`auto_daily_limit` was reached today.
+item was reviewed less than `auto_wait_hours` ago (1 in configs made since 5.5.0; a config with
+no such line uses 6); it installs the first time Claude Code starts after that time (your
+computer's local time). Don't want to wait: `/star-triage:sync now` (or `python3 star-triage.py
+sync --now`) installs it at once. That skips only the delay: the daily limit stays, and High-risk
+and blocked items still need you. To stop it instead, untick `approve` on its note
+(`python3 star-triage.py unapprove owner/name`), or run `python3 star-triage.py pause`.
+"wait for tomorrow (daily limit N)" means `auto_daily_limit` was reached today. To shorten the
+wait for good, lower `auto_wait_hours` in config.yml (0 = no delay).
 
 ### `Unable to resolve action thebeekeper/star-triage@v1`
 
@@ -449,6 +486,20 @@ it's private, allow access under *its Settings → Actions → General → Acces
 
 That's the v4 layout, where every copy carried the code. Run setup with `--migrate` (see
 "Upgrading from v4" in the README); it removes the copies and keeps your notes and approvals.
+
+### Plugin updates: `updating star-triage to X.Y.Z in the background`
+
+When your reviews come from a newer star-triage than the plugin on this computer, the plugin
+runs `claude plugin marketplace update star-triage` and `claude plugin update
+star-triage@star-triage` in the background, at most once a day. Restart Claude Code to use the
+new version. The next start says `updated star-triage to X.Y.Z` (or `could not update itself`,
+with the commands to run by hand). Turn it off with `auto_update: false` in config.yml.
+
+Setup also turns on Claude Code's own auto-update for the star-triage marketplace, by setting
+the documented `autoUpdate` field on its `extraKnownMarketplaces` entry in
+`~/.claude/settings.json` (a backup goes to `settings.json.bak`). It changes only that field,
+and only when the entry already exists. To turn it off: `/plugin` > Marketplaces >
+star-triage > Disable auto-update, or `auto_update: false` and run setup again.
 
 ## Installing approved items
 
@@ -469,8 +520,9 @@ Run `python3 star-triage.py sync --status` (the mode, whether it is paused, and 
 state) and `python3 star-triage.py history` (what was installed and why). The usual reasons:
 
 - **The safety delay.** An item installs only once its review is `auto_wait_hours` old
-  (default 6). The start message says "1 waiting (6 h safety delay)". It installs at a later
-  Claude Code start.
+  (1 in new configs, 6 when the line is missing). The start message says when, e.g. "X installs
+  after 11:52 (1 h safety delay)". It installs at a later Claude Code start, or at once with
+  `/star-triage:sync now`.
 - **The daily limit.** At most `auto_daily_limit` items (default 5) install per day on one
   computer. The rest install on the following days.
 - **Paused.** `python3 star-triage.py resume` turns automatic installs back on. The doctor
@@ -489,9 +541,11 @@ state) and `python3 star-triage.py history` (what was installed and why). The us
   computer. If its push failed, the workflow still uses the old mode: run `git push` in your
   data repo.
 
-### `mode`, `pause`, `undo` or `history` is not a command
+### `mode`, `pause`, `undo`, `history`, `list`, `approve` or `token` is not a command
 
-The `star-triage.py` launcher in your data repo is from before 5.2. Run
+The `star-triage.py` launcher in your data repo is older than the plugin (`list`, `approve`,
+`unapprove` and `token` came in 5.5.0, `mode` and the rest in 5.2). The copy at
+`~/.claude/star-triage.py` is always current: `python3 "$HOME/.claude/star-triage.py" list`. Run
 `python3 star-triage.py setup --skip-config` and answer `y` when it offers to update the
 launcher. Until then, `/star-triage:mode` in Claude Code does the same.
 
@@ -562,6 +616,29 @@ Untick `approve` on its note (it is removed at the next sync), or run
 
 When Claude runs the sync for you, it can't answer prompts on your behalf. Run
 `python3 star-triage.py sync` in your own terminal and answer there. The sync never auto-accepts.
+
+### `sync --now` installed only some of what waits
+
+`--now` (or `/star-triage:sync now`) skips only the safety delay. It still stops at the daily
+limit ("waits for tomorrow"), never installs High-risk items in the auto modes or blocked items
+in any mode, and does nothing while paused. For a High-risk or blocked item, run
+`python3 star-triage.py sync` in your own terminal (a blocked one asks you to type `install`).
+`--now` is recorded in the history like an automatic install, so `undo` removes it.
+
+### I don't use Obsidian: how do I see and approve reviews?
+
+`/star-triage:list` in Claude Code, or `python3 star-triage.py list` (`--waiting` for what needs
+you, `--repo owner/name` for one review with its security findings). `python3 star-triage.py
+approve owner/name` does exactly what ticking `approve` in Obsidian does: it sets the note's
+`approve` line on this computer. Commit and push the note if you want GitHub to keep it (a
+later re-review keeps only an `approve` it can see). `unapprove` unticks it. Answer "No" to
+the Obsidian question in setup (or set `obsidian: false`) and setup skips the Obsidian tips.
+
+### `list` says `waiting for you`
+
+The review found something to install, but nothing approves it yet: the verdict or risk is
+outside your star-triage mode, or it's High risk (never automatic in the auto modes). Read it
+with `list --repo owner/name`, then `approve owner/name` if you want it.
 
 ## Viewing the repo
 

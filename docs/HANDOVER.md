@@ -89,6 +89,8 @@ registries. The merge (or a tick) is the human approval.
 - **API keys are never moved** by sync; MCP servers needing a key get the command to run.
 - **Blocked ≠ forbidden**: never installed in the background; a typed `install` allows it.
 - **Hook in a plugin, not settings.json**: no editing user settings; updates with the plugin.
+  One exception since 5.5.0: setup sets the documented `autoUpdate` field on the existing
+  `extraKnownMarketplaces.star-triage` entry (with a backup), because no CLI command does it.
   Shell form, so it can try `python3`, then `python`, then `py` (macOS and Linux often have
   no `python`). `run_hook()` always exits 0, so a later one runs only when the earlier is missing.
 - **Action + plugin instead of a template full of scripts**: copies never got fixes.

@@ -91,6 +91,8 @@ cleanup
 "$PY" "$ENGINE/tests/test_auto_mode.py" || fail=1
 # Offline setup and doctor checks from the new-user test (fake gh, local "origin").
 "$PY" "$ENGINE/tests/test_setup.py" || fail=1
+# Offline list / approve / unapprove checks (reviews.py, the review table without Obsidian).
+"$PY" "$ENGINE/tests/test_reviews.py" || fail=1
 # The seal and .git/config restore steps of action.yml, run as written.
 "$PY" "$ENGINE/tests/test_action_steps.py" || fail=1
 exit $fail

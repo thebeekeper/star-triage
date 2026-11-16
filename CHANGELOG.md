@@ -1,5 +1,39 @@
 # Changelog
 
+## 5.5.0
+Less to do for the user, in setup and every day.
+- **Setup from the chat.** `/star-triage:setup` asks four questions (star-triage mode, repos per
+  run, which data repo, Obsidian or not), shows setup's plan once, and runs `setup.py` itself
+  with the new flags `--repo`/`--new-repo` (`--folder`), `--mode`, `--max`, `--obsidian`/
+  `--no-obsidian`, `--no-auto-update`. Without `--yes` they only print the plan. `--repo` clones
+  an existing data repo that isn't on this computer yet. The terminal flow is unchanged.
+- **The token gets its own command:** `python "$HOME/.claude/star-triage.py" token`
+  (`--api-key` for an API key). It is the only terminal step, with the same warnings and
+  clear-screen offer as before, and it refuses to run unless stdin and stdout are a real
+  terminal. The skill then checks the secret by name and starts the first run. If `gh` is
+  missing or logged out, the skill says the one command to fix it and stops.
+- **auto-plus is recommended** in setup (listed first, one sentence on what it does). Enter
+  still keeps the current mode, and a config without `mode:` is still manual.
+- **New configs wait 1 hour** before an automatic install (`auto_wait_hours: 1`, was 6).
+  Existing configs keep their value; a config without the line still waits 6 hours.
+- **Install now:** `python star-triage.py sync --now` or `/star-triage:sync now` installs what
+  is approved without the safety delay. The daily limit, pause, and the High-risk and blocked
+  rules stay; it is recorded in the history, so `undo` covers it. When something waits, the
+  start line ends with "(install now: /star-triage:sync now)".
+- **Reviews without Obsidian:** `python star-triage.py list` (`--waiting`, `--repo owner/name`)
+  and `/star-triage:list` show a table of reviews with their install status and first "When
+  you'd use it" example. `approve owner/name` and `unapprove owner/name` make the same edit
+  as the Obsidian checkbox. Setup asks whether you use Obsidian (`obsidian:` in config.yml)
+  and skips the Obsidian tips if not.
+- **The plugin updates itself.** When your reviews come from a newer star-triage, the start-up
+  hook runs `claude plugin marketplace update star-triage` and `claude plugin update
+  star-triage@star-triage` in the background, at most once a day, and says to restart Claude
+  Code. Setup also turns on Claude Code's own auto-update for the star-triage marketplace
+  (the documented `autoUpdate` field in `~/.claude/settings.json`, with a backup).
+  `auto_update: false` in config.yml turns both off.
+- The doctor's "Not set up yet" points to `/star-triage:setup`; its launcher check looks for the
+  5.5 commands.
+
 ## 5.4.1
 - Security (audit SEC-20): the GitHub token no longer sits in `.git/config` while Claude runs.
   claude-code-action used to write it into the origin URL, where Claude's Read tool could see

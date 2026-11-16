@@ -2,6 +2,8 @@
 
     python star-triage.py sync                 pull, then install, update or remove to match your approvals
     python star-triage.py sync --dry-run       show the plan, change nothing
+    python star-triage.py sync --now           install what is approved now, without the safety delay
+                                               (the daily limit and the High-risk and blocked rules stay)
     python star-triage.py sync --status        everything reviewed that can be installed, and its state here
     python star-triage.py sync --uninstall X   remove one (owner/name or its name) and untick its approve box
     python star-triage.py pause | resume       stop or restart everything automatic on this computer
@@ -20,10 +22,17 @@ What counts as approved
     background. Run this script by hand to confirm one.
 
 Auto mode (`mode: auto` or `auto-plus` in config.yml, see mode.py): the background run installs
-an item only once its review is auto_wait_hours old (default 6, time to untick it or pause)
+an item only once its review is auto_wait_hours old (1 in new configs; 6 when the line is
+missing; time to untick it or pause)
 and while fewer than auto_daily_limit (default 5) were installed today. High-risk and blocked
 items are never installed in the background. Every automatic action goes to
-.star-triage/history.jsonl, which `history` and `undo` read.
+.star-triage/history.jsonl, which `history` and `undo` read. `--now` follows the same rules
+except the safety delay, and is recorded the same way.
+
+Plugin updates: when installs.json says your reviews come from a newer star-triage than this
+plugin, the hook runs `claude plugin marketplace update star-triage` and `claude plugin update
+star-triage@star-triage` in the background, at most once a day (`auto_update: false` in
+config.yml turns it off).
 
 It never installs anything that is not in installs.json, never passes --yes, and never
 copies your API keys anywhere: an MCP server that needs a key is listed with the command
@@ -48,15 +57,15 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from doctor import UPDATE_HOW, engine_mismatch, find_claude  # noqa: E402  (standard library only)
+from doctor import UPDATE_COMMANDS, UPDATE_HOW, engine_mismatch, find_claude  # noqa: E402  (standard library only)
 
-from paths import (ENGINE_DIR, MODE_SHORT, TROUBLESHOOTING_URL, daily_limit, find_data_root,  # noqa: E402
-                   install_launcher, launcher_command, linked_data_root, read_mode, read_simple_config, running_as_plugin,
-                   safe_console, wait_hours, write_link)
+from paths import (ENGINE_DIR, MODE_SHORT, NOW_HINT, TROUBLESHOOTING_URL, config_on, daily_limit,  # noqa: E402
+                   find_data_root, install_launcher, launcher_command, linked_data_root, read_mode,
+                   read_simple_config, running_as_plugin, safe_console, wait_hours, write_link)
 
 # Automatic runs use only the data repo you linked (setup, or STAR_TRIAGE_DATA), never the
 # folder Claude Code happens to be opened in: that folder may be someone else's project.
-AUTOMATIC = bool({"--hook", "--background"} & set(sys.argv[1:]))
+AUTOMATIC = bool({"--hook", "--background", "--self-update"} & set(sys.argv[1:]))
 LINKED = linked_data_root() if AUTOMATIC else None
 ROOT = (LINKED if AUTOMATIC else find_data_root()) or Path.cwd()  # your data repo (see paths.py)
 INSTALLS_PATH = ROOT / "installs.json"
@@ -69,6 +78,9 @@ HOOK_STAMP = STATE_DIR / "hook.json"
 LOCK_PATH = STATE_DIR / "sync.lock"
 PAUSE_PATH = STATE_DIR / "paused"          # present = nothing automatic happens on this computer
 HISTORY_PATH = STATE_DIR / "history.jsonl"  # one line per automatic install or removal
+SELF_UPDATE_PATH = STATE_DIR / "self-update.json"  # the plugin's last attempt to update itself
+SELF_UPDATE_EVERY = 24 * 3600
+PLUGIN_MARKETPLACE = "star-triage"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 SKILLS_DIR = CLAUDE_DIR / "skills"
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
@@ -695,12 +707,12 @@ def run_hook() -> int:
         if not LINKED or (not (ROOT / "installs.json").exists() and not (ROOT / "config.yml").exists()):
             return 0  # no data repo linked yet: stay silent
         messages = []
-        old = engine_mismatch(ROOT)
-        if old:
-            messages.append(f"{old}. {UPDATE_HOW}")
+        update_line = self_update_message(engine_mismatch(ROOT))
+        if update_line:
+            messages.append(update_line)
         mode, wait_h, limit = settings()
         auto = mode != "manual"
-        parts, extra = [], []  # auto modes: everything goes into one short line
+        parts, extra, waiting = [], [], []  # auto modes: everything goes into one short line
         last = load_json(RESULT_PATH, {})
         if last and not last.get("shown"):
             if auto and "log" in last:
@@ -752,7 +764,8 @@ def run_hook() -> int:
                 messages.append(f"star-triage: installing {len(steps)} approved item(s) in the background ({names}). "
                                 "Skills work right away; plugins and MCP servers load next time you start Claude Code.")
         if parts or extra:
-            messages.insert(0, " | ".join([f"star-triage {mode}: " + ("; ".join(parts) or "nothing installed")] + extra))
+            line = " | ".join([f"star-triage {mode}: " + ("; ".join(parts) or "nothing installed")] + extra)
+            messages.insert(0, line + (f" {NOW_HINT}" if auto and waiting else ""))
         if messages:
             emit("\n".join(messages), "\n".join(messages))
     except Exception as exc:  # a broken sync must never break Claude Code
@@ -760,8 +773,8 @@ def run_hook() -> int:
     return 0
 
 
-def start_background() -> None:
-    cmd = [sys.executable, str(ENGINE_DIR / "scripts" / "sync.py"), "--background"]
+def start_background(flag: str = "--background") -> None:
+    cmd = [sys.executable, str(ENGINE_DIR / "scripts" / "sync.py"), flag]
     kwargs: dict = {"cwd": ROOT, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                     "stderr": subprocess.DEVNULL, "close_fds": True,
                     "env": dict(os.environ, STAR_TRIAGE_DATA=str(ROOT))}
@@ -770,6 +783,81 @@ def start_background() -> None:
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(cmd, **kwargs)
+
+
+# ----------------------------------------------------------------- the plugin keeps itself up to date
+
+def self_update_due(last: dict, now: float) -> bool:
+    """At most one attempt a day."""
+    try:
+        tried = float(last.get("tried") or 0)
+    except (TypeError, ValueError):
+        tried = 0.0
+    return now - tried >= SELF_UPDATE_EVERY
+
+
+def self_update_allowed() -> bool:
+    """Only the installed plugin updates itself, and only with auto_update on (the default)."""
+    return (running_as_plugin() and config_on(read_simple_config(ROOT / "config.yml"), "auto_update")
+            and find_claude() is not None)
+
+
+def self_update_message(old: str | None, now: float | None = None, allowed: bool | None = None) -> str:
+    """The start-up line about the plugin's own version. `old` is engine_mismatch()'s text (None
+    when the plugin is not older than the reviews). Starts the background update when it is due."""
+    now = time.time() if now is None else now
+    last = load_json(SELF_UPDATE_PATH, {})
+    if last.get("done") and not last.get("shown"):
+        save_json(SELF_UPDATE_PATH, {**last, "shown": True})
+        version = last.get("version") or "?"
+        if not last.get("ok"):
+            return f"star-triage could not update itself to {version} (see .star-triage/sync.log). {UPDATE_HOW}"
+        if not old:
+            return f"updated star-triage to {version}."
+        if version == old.rsplit(" ", 1)[-1]:
+            return f"updated star-triage to {version}; restart Claude Code to use it"
+    if not old:
+        return ""
+    target = old.rsplit(" ", 1)[-1]
+    allowed = self_update_allowed() if allowed is None else allowed
+    if allowed and self_update_due(last, now):
+        save_json(SELF_UPDATE_PATH, {"tried": now, "version": target, "done": False})
+        start_background("--self-update")
+        return f"updating star-triage to {target} in the background; restart Claude Code to use it"
+    if allowed and not last.get("done") and last.get("version") == target:
+        return f"updating star-triage to {target} in the background; restart Claude Code to use it"
+    return f"{old}. {UPDATE_HOW}"
+
+
+def self_update() -> int:
+    """--self-update (started by the hook): the two update commands, never with --yes."""
+    last = load_json(SELF_UPDATE_PATH, {})
+    claude, run, ok = find_claude(), Runner(False, False), True
+    for command in UPDATE_COMMANDS:  # "claude plugin marketplace update star-triage", "claude plugin update ..."
+        ok = ok and bool(claude) and run([claude, *command.split()[1:]])
+    save_json(SELF_UPDATE_PATH, {**last, "done": True, "ok": ok, "shown": False})
+    log(f"{'ok ' if ok else 'ERR'} self-update to {last.get('version', '?')}")
+    return 0
+
+
+def marketplace_auto_update(on: bool = True) -> str:
+    """Claude Code's own auto-update for the star-triage marketplace, through the documented
+    `autoUpdate` field of its `extraKnownMarketplaces` entry in ~/.claude/settings.json (that
+    entry is what `claude plugin marketplace add` writes). Only an existing entry is changed,
+    with a backup; nothing else in the file is touched. Returns 'changed', 'already',
+    'not-declared' or 'unreadable'."""
+    settings = load_json(SETTINGS_PATH, None)
+    if not isinstance(settings, dict):
+        return "unreadable" if SETTINGS_PATH.exists() else "not-declared"
+    entry = (settings.get("extraKnownMarketplaces") or {}).get(PLUGIN_MARKETPLACE)
+    if not isinstance(entry, dict):
+        return "not-declared"
+    if bool(entry.get("autoUpdate")) == on:
+        return "already"
+    entry["autoUpdate"] = on
+    shutil.copy2(SETTINGS_PATH, SETTINGS_PATH.with_suffix(".json.bak"))
+    save_json(SETTINGS_PATH, settings)
+    return "changed"
 
 
 # ----------------------------------------------------------------- pause, history, undo
@@ -841,6 +929,62 @@ def undo(scope: str) -> int:
     return 1 if res["failed"] else 0
 
 
+# ----------------------------------------------------------------- --now
+
+def install_now(dry: bool, no_pull: bool, scope: str) -> int:
+    """`sync --now`: what the background run would install, now. Only the safety delay is
+    skipped: the daily limit, pause, and the High-risk and blocked rules stay, nothing asks a
+    question (a blocked item still needs `sync` in your own terminal and a typed "install"),
+    and every step goes to the history, so `undo` covers it."""
+    if PAUSE_PATH.exists():
+        print("star-triage is paused on this computer, so nothing is installed. Resume first: "
+              "python star-triage.py resume")
+        return 0
+    if lock_busy():
+        print("A background sync is running right now. Try again in a few minutes.")
+        return 1
+    if not dry:
+        STATE_DIR.mkdir(exist_ok=True)
+        LOCK_PATH.write_text(str(os.getpid()))
+    try:
+        if not no_pull and not dry:
+            print("Pulling your latest approvals...")
+            pull(quiet=False)
+        items = load_json(INSTALLS_PATH, {}).get("items", {})
+        state = load_json(STATE_PATH, {})
+        mode, _, limit = settings()
+        steps, capped, high = plan(items, state, prune=False), [], []
+        if mode != "manual":
+            steps, _, capped, high = hold_back(steps, 0, limit, history_read())
+        result = {"done": [], "failed": [], "skipped": [], "notes": [], "log": [], "at": ""}
+        if steps:
+            sync = Sync(Runner(dry, interactive=False), find_claude(), scope)
+            result = execute(steps, state, sync, confirm_blocked=False)
+        if not dry and result["log"]:
+            at = dt.datetime.now().isoformat(timespec="seconds")
+            history_add([{"at": at, "batch": result["at"], "auto": True, "now": True, "mode": mode, **row}
+                         for row in result["log"]])
+        if not steps and not capped and not high:
+            print("Nothing waits: everything you approved is installed.")
+        for _, key, item in capped:
+            print(f"\n{short_name(key, item)} waits for tomorrow (daily limit {limit}).")
+        for _, key, _ in high:
+            print(f"\n{key} is High risk, so it is never installed automatically. To install it, run in your "
+                  "own terminal, in your data repo: python star-triage.py sync")
+        for line in result["skipped"] + result["notes"]:
+            print(f"\nNote: {line}")
+        if dry:
+            print("\nDry run: nothing was changed.")
+        elif result["failed"]:
+            print(f"\n{len(result['failed'])} step(s) failed. Details: {LOG_PATH.relative_to(ROOT)}. See {GUIDE}")
+        elif result["done"]:
+            print("\nDone." + (" Restart Claude Code to load new plugins and MCP servers." if needs_restart(result) else ""))
+        return 1 if result["failed"] else 0
+    finally:
+        if not dry:
+            LOCK_PATH.unlink(missing_ok=True)
+
+
 # ----------------------------------------------------------------- main
 
 def main() -> int:
@@ -848,6 +992,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  allow_abbrev=False)  # AUTOMATIC above reads the exact flags
     ap.add_argument("--dry-run", action="store_true", help="show the plan without changing anything")
+    ap.add_argument("--now", action="store_true", help="install what is approved now, without waiting for the "
+                    "safety delay (the daily limit, High-risk and blocked rules still apply)")
     ap.add_argument("--no-pull", action="store_true", help="skip `git pull` first")
     ap.add_argument("--status", action="store_true", help="list reviewed installs and their state here")
     ap.add_argument("--uninstall", metavar="NAME", help="remove one item and untick its approve box")
@@ -861,10 +1007,13 @@ def main() -> int:
     ap.add_argument("--history", action="store_true", help="the last 20 automatic installs and removals")
     ap.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--self-update", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     if args.hook:
         return run_hook()
+    if args.self_update:
+        return self_update() if LINKED else 0
     if args.background and not LINKED:
         return 0  # no linked data repo: nothing to do, and never the current folder
     if args.install_hook or args.remove_hook:
@@ -883,6 +1032,8 @@ def main() -> int:
         return show_history()
     if args.undo:
         return undo(args.scope or read_scope())
+    if args.now:
+        return install_now(args.dry_run, args.no_pull, args.scope or read_scope())
 
     background = args.background
     if background:
@@ -950,11 +1101,13 @@ def main() -> int:
                     if waiting:
                         # Say why each one waits, instead of asking for a merge already done (UT-14).
                         print("Nothing is approved to install yet. These wait for you:")
+                        obsidian = config_on(read_simple_config(ROOT / "config.yml"), "obsidian")
                         for key, it in waiting:
                             why = ("approve is unticked on its note" if it.get("status") == "queued"
                                    else f"verdict {it.get('verdict') or '?'}, risk {it.get('risk') or '?'}")
-                            print(f"  {key}: {why}. To install it, tick `approve` in"
-                                  f" {it.get('note') or 'its note'}.")
+                            how = (f"tick `approve` in {it.get('note') or 'its note'}" if obsidian
+                                   else f"run: python star-triage.py approve {key}")
+                            print(f"  {key}: {why}. To install it, {how}.")
                     else:
                         print("Nothing to install yet. Reviews that find something installable show up here.")
                 if not hook_installed():

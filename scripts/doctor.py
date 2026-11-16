@@ -65,9 +65,9 @@ def find_claude() -> str | None:
     return None
 
 
-def detect_repo() -> str | None:
-    """owner/name of the GitHub repo this folder belongs to, from the origin remote."""
-    res = run(["git", "remote", "get-url", "origin"])
+def detect_repo(path: Path | None = None) -> str | None:
+    """owner/name of the GitHub repo a folder (default: the data repo) belongs to, from its origin remote."""
+    res = run(["git", "remote", "get-url", "origin"], cwd=path or ROOT)
     if res.returncode != 0:
         return None
     m = re.search(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", res.stdout.strip())
@@ -207,7 +207,7 @@ def check_config(path: Path = CONFIG_PATH) -> list[Result]:
         bad("mode must be manual, auto or auto-plus", "Pick one with: python star-triage.py mode")
     for key, low, high in (("auto_wait_hours", 0, 168), ("auto_daily_limit", 1, 50)):
         if key in cfg and not (isinstance(cfg[key], int) and not isinstance(cfg[key], bool) and low <= cfg[key] <= high):
-            bad(f"{key} must be a whole number from {low} to {high}", f"e.g. {key}: {6 if low == 0 else 5}")
+            bad(f"{key} must be a whole number from {low} to {high}", f"e.g. {key}: {1 if low == 0 else 5}")
 
     if str(cfg.get("install_scope", "user")) not in SCOPES:
         bad("install_scope must be user, project or local", "e.g. install_scope: user")
@@ -283,7 +283,8 @@ def check_local() -> list[Result]:
     if not (ROOT / "config.yml").exists():
         # A brand-new user: that's expected, not an error (UT-3).
         out.append(Result("todo", "Not set up yet: no star-triage data repo on this computer",
-                          "Next step, in a terminal (not inside Claude Code):\n  " + launcher_command("setup")))
+                          "Next step: run /star-triage:setup in Claude Code. Or, in a terminal:\n  "
+                          + launcher_command("setup")))
         return out
     out.append(Result("ok", f"Data repo: {ROOT}"))
     mismatch = engine_mismatch()
@@ -343,9 +344,9 @@ def check_layout() -> list[Result]:
     if not launcher.exists() and "scripts/select_new.py" not in text:
         out.append(Result("warn", "star-triage.py (the command launcher) is missing from your data repo",
                           "Run setup, which adds it."))
-    elif launcher.exists() and '"mode"' not in launcher.read_text(encoding="utf-8", errors="ignore"):
+    elif launcher.exists() and '"token"' not in launcher.read_text(encoding="utf-8", errors="ignore"):
         out.append(Result("warn", "star-triage.py in your data repo is older than the plugin: it lacks "
-                                  "mode, pause, resume, undo and history",
+                                  "some commands (token, list, approve)",
                           "Run python star-triage.py setup --skip-config: it offers to update the launcher."))
     return out
 

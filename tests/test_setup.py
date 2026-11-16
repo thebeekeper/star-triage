@@ -194,6 +194,7 @@ def test_main_flow() -> None:
     wf_reset("0")
     os.environ["FAKE_PR_PERM"] = "off"
     setup.input, setup.find_claude, doctor.check_version = fake_input, (lambda: None), (lambda: [])
+    setup.real_terminal = lambda: True  # stdout is captured below, so it is not a tty here
     stdin, sys.stdin, sys.argv = sys.stdin, Tty(), ["setup.py"]
     try:
         _, out = captured(setup.main)
@@ -218,6 +219,87 @@ def test_main_flow() -> None:
     check("UT-9 the first run starts after the workflow is registered", "Started." in out, out[-300:])
 
 
+def test_flag_helpers() -> None:
+    """5.5: setup's answers as flags, for /star-triage:setup."""
+    check("flags: good answers have no problems",
+          setup.flag_problems(["--repo", "o/r", "--mode", "auto-plus", "--max", "3", "--no-obsidian"]) == [])
+    problems = setup.flag_problems(["--mode", "turbo", "--max", "40", "--repo", "x", "--new-repo", "a b",
+                                    "--obsidian", "--no-obsidian"])
+    check("flags: a bad mode, max, repo and name, and both repo flags or both Obsidian flags, are named",
+          len(problems) == 6 and any("--mode" in p for p in problems) and any("1 to 25" in p for p in problems),
+          str(problems))
+    original = (ENGINE / "template" / "config.yml").read_text(encoding="utf-8")
+    text = setup.config_from_flags(original, ["--mode", "auto-plus", "--max", "5", "--no-obsidian", "--no-auto-update"])
+    check("flags: mode, max_per_run, obsidian and auto_update are set, everything else kept",
+          "\nmode: auto-plus\n" in text and "\nmax_per_run: 5\n" in text and "\nobsidian: false\n" in text
+          and "\nauto_update: false\n" in text and text.count("mode: ") == 1
+          and len(text.splitlines()) == len(original.splitlines()), text[:400])
+    old = "mode: manual\nmax_per_run: 8\ncontexts:\n  - name: General\n"
+    added = setup.config_from_flags(old, ["--obsidian"])
+    check("flags: a config without `obsidian` gets it, with its comment, above contexts",
+          added.index("obsidian: true") < added.index("contexts:") and "# Do you read the notes in Obsidian?" in added,
+          added)
+    check("flags: no answer flags leave config.yml as it was", setup.config_from_flags(original, ["--yes"]) == original)
+    new = (ENGINE / "template" / "config.yml").read_text(encoding="utf-8")
+    check("new configs: 1 h safety delay, Obsidian and plugin updates on, manual mode",
+          "\nauto_wait_hours: 1\n" in new and "\nobsidian: true\n" in new and "\nauto_update: true\n" in new
+          and "\nmode: manual\n" in new)
+    check("old configs: no auto_wait_hours line still means 6 h", __import__("paths").wait_hours({}) == 6)
+
+
+def test_flag_flow() -> None:
+    """The /star-triage:setup path, end to end against the fake gh: plan only, then --yes, then
+    the token step left to the user's terminal, then the first run once the secret exists."""
+    script, log = ENGINE / "scripts" / "setup.py", TMP / "calls.log"
+    fake = {"STAR_TRIAGE_GH": str(ENGINE / "tests" / "fake_gh.py")}
+    wf_reset("0")
+    head = git("rev-parse", "main", cwd=ORIGIN)
+    before = (DATA / "config.yml").read_text(encoding="utf-8")
+    res = run_py([script, "--repo", "o/r", "--mode", "auto-plus", "--max", "5", "--no-obsidian"], DATA, **fake)
+    check("setup flags without --yes: prints the plan, changes nothing, exits 0",
+          res.returncode == 0 and "Here is what setup will do:" in res.stdout and "run the same command again with --yes"
+          in res.stdout and (DATA / "config.yml").read_text(encoding="utf-8") == before
+          and git("rev-parse", "main", cwd=ORIGIN) == head, res.stdout[-600:] + res.stderr[-300:])
+    check("setup flags: the plan names the account and the one terminal step for the token",
+          "as GitHub account tester" in res.stdout and "one short command in your own terminal" in res.stdout,
+          res.stdout[-600:])
+
+    log.write_text("", encoding="utf-8")
+    res = run_py([script, "--repo", "o/r", "--mode", "auto-plus", "--max", "5", "--no-obsidian", "--yes"], DATA, **fake)
+    shown = git("show", "main:config.yml", cwd=ORIGIN)
+    calls = log.read_text(encoding="utf-8")
+    check("setup --yes: config.yml gets the answers and is pushed",
+          res.returncode == 0 and "\nmode: auto-plus\n" in shown and "\nmax_per_run: 5\n" in shown
+          and "\nobsidian: false\n" in shown, res.stdout[-600:] + res.stderr[-300:])
+    check("setup --yes: no token is touched; the user gets the one `token` command; no first run yet",
+          "secret set" not in calls and 'star-triage.py" token' in res.stdout
+          and "first run starts once the token is stored" in res.stdout and "workflow run" not in calls,
+          res.stdout[-800:])
+    check("setup --no-obsidian: no Obsidian tips, the list command instead",
+          "Obsidian 1.9" not in res.stdout and "/star-triage:list" in res.stdout, res.stdout[-500:])
+
+    res = run_py([script, "--repo", "o/r", "--yes"], DATA, FAKE_SECRET="1", **fake)
+    check("setup --yes again with the secret stored: starts the first run, config unchanged",
+          res.returncode == 0 and "Started." in res.stdout and "already set: CLAUDE_CODE_OAUTH_TOKEN" in res.stdout
+          and git("show", "main:config.yml", cwd=ORIGIN) == shown, res.stdout[-600:] + res.stderr[-300:])
+
+    res = run_py([script, "--new-repo", "my-stars", "--folder", TMP / "newhome", "--mode", "manual"], DATA, **fake)
+    check("setup --new-repo without --yes: the plan only, nothing created",
+          res.returncode == 0 and "create the private repo tester/my-stars" in res.stdout
+          and not (TMP / "newhome").exists() and "repo create" not in log.read_text(encoding="utf-8"),
+          res.stdout[-500:] + res.stderr[-300:])
+    res = run_py([script, "--mode", "turbo"], DATA, **fake)
+    check("setup: a bad flag is explained, exit 2", res.returncode == 2 and "--mode must be one of" in res.stdout,
+          res.stdout[-300:])
+
+    log.write_text("", encoding="utf-8")
+    res = run_py([script, "--token"], DATA, **fake)
+    check("token: refuses without a real terminal (so it can't run inside Claude), and touches no secret",
+          res.returncode == 1 and "only runs in your own terminal" in res.stdout
+          and 'star-triage.py" token' in res.stdout and "secret" not in log.read_text(encoding="utf-8"),
+          res.stdout[-400:])
+
+
 try:
     test_doctor_before_setup()
     test_launcher()
@@ -225,7 +307,9 @@ try:
     test_start_on_main()
     test_registration()
     test_engine_version()
-    test_main_flow()  # last: it links the data repo, as real setup does
+    test_flag_helpers()
+    test_main_flow()  # it links the data repo, as real setup does
+    test_flag_flow()
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if failed else 0)
