@@ -27,6 +27,9 @@ REQUIRED = ["type", "category", "status", "verdict", "risk", "saves_tokens",
 SINGLE = ["type", "status", "verdict", "risk", "saves_tokens", "source"]
 MULTI = ["category", "relevant_to"]
 SECTIONS = ["## What it is", "## Verdict"]
+# Since 5.4 every note says when you'd use the tool, with 2 or 3 concrete examples. Notes
+# from older runs don't have it; --all only warns about those.
+USE_SECTION = "## When you'd use it"
 # eligible and not-recommended are from older versions and still accepted.
 AUTO_INSTALL = (None, "queued", "available", "blocked", "manual", "none", "eligible", "not-recommended")
 INSTALL_KINDS = (None, "plugin", "skill", "mcp", "cli", "manual", "none")
@@ -44,7 +47,24 @@ def allowed_values(cfg: dict) -> dict[str, set[str]]:
     return labels
 
 
-def check_note(path: Path, allowed: dict[str, set[str]]) -> list[str]:
+def use_examples(body: str) -> int:
+    """How many bullet points the "When you'd use it" section has (-1: no such section)."""
+    m = re.search(r"^## When you.d use it[ \t]*\n(.*?)(?=^## |\Z)", body, re.M | re.S)
+    if not m:
+        return -1
+    return sum(1 for line in m.group(1).splitlines() if re.match(r"\s*[-*] \S", line))
+
+
+def check_use_section(path: Path, body: str) -> list[str]:
+    n = use_examples(body)
+    if n < 0:
+        return [f"{path}: missing section '{USE_SECTION}'"]
+    if n < 2:
+        return [f"{path}: '{USE_SECTION}' needs 2 or 3 examples (bullet points), found {n}"]
+    return []
+
+
+def check_note(path: Path, allowed: dict[str, set[str]], need_use: bool = True) -> list[str]:
     errs = []
     fm = read_frontmatter(path)
     if fm is None:
@@ -90,6 +110,8 @@ def check_note(path: Path, allowed: dict[str, set[str]]) -> list[str]:
     for s in SECTIONS:
         if s not in body:
             errs.append(f"{path}: missing section '{s}'")
+    if need_use:
+        errs += check_use_section(path, body)
     return errs
 
 
@@ -157,8 +179,14 @@ def main() -> None:
         notes = [p for p in TRACKER_DIR.rglob("*.md")
                  if not p.name.startswith("_") and (read_frontmatter(p) or {}).get("repo")]
 
+    old_style = 0
     for note in notes:
-        errors += check_note(note, allowed)
+        errors += check_note(note, allowed, need_use=not args.all)
+        if args.all and check_use_section(note, note.read_text(encoding="utf-8")):
+            old_style += 1
+    if old_style:
+        print(f"note: {old_style} note(s) from before 5.4 have no '{USE_SECTION}' section; "
+              "a re-review adds it.")
 
     if errors:
         print("Validation failed:")

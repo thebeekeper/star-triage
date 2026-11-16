@@ -1,5 +1,38 @@
 # Changelog
 
+## 5.4.0
+Fixes from a new-user test (UT numbers refer to that test).
+- No more questions about you (UT-6). Reviews judge each repo on general quality and safety,
+  and every note gets a "When you'd use it" section with 2 or 3 concrete examples; new notes
+  without it are rejected. `about_me` is gone from new configs and the "about_me is empty"
+  warning is gone; an existing `about_me` still works as extra context. Projects stay optional.
+- Setup asks its questions first, then shows ONE plan and asks "Go ahead? [Y/n]" once, then
+  runs straight through (UT-8). `--step-by-step` asks before each step, as before.
+- Each GitHub setting setup turns on prints what it is, why, and where it lives on GitHub
+  (UT-7).
+- Before using an existing data repo, setup shows the repo, folder and GitHub account and asks
+  (default no), and warns when `github_user` would change whose stars are read (UT-5).
+- Warnings before and after `claude setup-token` (it prints the token), and an offer to clear
+  the screen (UT-10).
+- New data repos start on `main`; nothing assumes a branch name (UT-11).
+- After the first push, setup waits for GitHub Actions to register the workflow, pushes a
+  one-character change to the workflow file if it doesn't, and only then starts the first
+  run. On failure it prints the Actions link and "click Run workflow", not an HTTP 404. New
+  `setup --repair`; the doctor runs the same check and suggests it (UT-9).
+- The doctor before setup says "Not set up yet" with one next step and exits 0 (UT-3).
+- A stable setup command: the plugin keeps a launcher at `~/.claude/star-triage.py`, so
+  `python "$HOME/.claude/star-triage.py" setup` works from any folder and after updates (UT-4).
+- The restore step after Claude also names settings whose value changed (per-setting hashes,
+  names only), e.g. `remote.origin.url` (UT-12). Open: claude-code-action puts the workflow
+  token in the origin URL while Claude runs; a deny rule for `.git/` is not shipped because it
+  can't be verified offline (audit SEC-20).
+- actions/checkout v7.0.1 and actions/setup-python v7.1.0 (Node 24), still SHA-pinned (UT-13).
+- Runs write `engine_version` into installs.json; the doctor and the Claude Code start message
+  say when the plugin on this computer is older, with the update commands (UT-16).
+- The start message names what waits and until when, in local time, e.g. `star-triage
+  auto-plus: ponytail installs after 11:52 (6 h safety delay)`; items over the daily limit are
+  named too. Messages say "star-triage mode" (UT-18).
+
 ## 5.3.1
 - Fix: re-reviewing a repo kept the old `approve: false` even when that was only the default
   the last review wrote, so a newly approved item stayed unticked and never installed. A

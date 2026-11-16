@@ -64,13 +64,13 @@ runs:
               | first // empty | "number=\(.number)\nbranch=\(.headRefName)"' >> "$GITHUB_OUTPUT"
 
     # Third-party Actions are pinned to a full commit SHA; the comment is the release it is.
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node 24)
       with:
         token: ${{ inputs.github_token }}
         fetch-depth: 0               # needed to see the open review PR's branch
         persist-credentials: false   # keep the token out of .git/config while Claude runs
 
-    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0 (Node 24)
       with:
         python-version: "3.12"
 
@@ -227,14 +227,24 @@ runs:
         BEFORE: ${{ steps.seal.outputs.sum }}
       run: |
         # Put back the clean .git/config, whatever changed it (claude-code-action sets a git
-        # user and an origin URL with a token). Only setting names are logged, never values.
-        if [ -f "$RUNNER_TEMP/git-config.before" ]; then
-          if ! cmp -s .git/config "$RUNNER_TEMP/git-config.before"; then
-            echo "Restoring .git/config. Settings changed during the Claude step:"
-            diff <(git config --file "$RUNNER_TEMP/git-config.before" --list --name-only | sort -u) \
-                 <(git config --file .git/config --list --name-only | sort -u) || true
+        # user and an origin URL with a token). Only setting names are logged, never values:
+        # a changed value is found by comparing a hash of each setting's values.
+        before="$RUNNER_TEMP/git-config.before"
+        if [ -f "$before" ]; then
+          if ! cmp -s .git/config "$before"; then
+            names() { git config --file "$1" --list --name-only 2>/dev/null | LC_ALL=C sort -u; }
+            vhash() { git config --file "$1" --get-all "$2" 2>/dev/null | sha256sum | cut -c1-16; }
+            added=$(LC_ALL=C comm -13 <(names "$before") <(names .git/config) | paste -sd' ' -)
+            removed=$(LC_ALL=C comm -23 <(names "$before") <(names .git/config) | paste -sd' ' -)
+            changed=$(LC_ALL=C comm -12 <(names "$before") <(names .git/config) | while IFS= read -r k; do
+                        [ "$(vhash "$before" "$k")" = "$(vhash .git/config "$k")" ] || printf '%s\n' "$k"
+                      done | paste -sd' ' -)
+            echo "Restoring .git/config. Settings changed during the Claude step (names only):"
+            echo "  added: ${added:-none}"
+            echo "  removed: ${removed:-none}"
+            echo "  value changed: ${changed:-none}"
           fi
-          cp "$RUNNER_TEMP/git-config.before" .git/config
+          cp "$before" .git/config
         fi
         seal() { find "$RUNNER_TEMP/trusted" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum \
                    | sha256sum | cut -d' ' -f1; }

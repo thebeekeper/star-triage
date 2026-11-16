@@ -1,7 +1,7 @@
 {
   "name": "star-triage",
   "displayName": "star-triage",
-  "version": "5.3.1",
+  "version": "5.4.0",
   "description": "Installs what you approved from your reviewed GitHub stars (plugins, skills, MCP servers, CLI tools) in the background when Claude Code starts, plus setup and sync skills.",
   "author": { "name": "Bee", "url": "https://github.com/thebeekeper" },
   "homepage": "https://github.com/thebeekeper/star-triage",

@@ -64,6 +64,11 @@ tags: ["star-triage"]
 
 x
 
+## When you'd use it
+
+- one
+- two
+
 ## Verdict: {verdict}
 
 y
@@ -75,7 +80,7 @@ y
 (W/".triage/new.json").write_text(json.dumps(batch))
 env = dict(os.environ, PYTHONPATH="", GITHUB_REPOSITORY_OWNER="thebeekeper", STAR_TRIAGE_DATA=str(W))
 for cmd in (["scan_repo.py"], ["apply_scan.py"], ["validate_notes.py","--changed"], ["queue_installs.py"]):
-    r = subprocess.run([sys.executable, str(ENGINE/"scripts"/cmd[0]), *cmd[1:]], cwd="/tmp", capture_output=True, text=True, env=env)
+    r = subprocess.run([sys.executable, str(ENGINE/"scripts"/cmd[0]), *cmd[1:]], cwd=tempfile.gettempdir(), capture_output=True, text=True, env=env)
     if r.returncode:
         print(f"FAIL {cmd[0]} exited {r.returncode}:\n{(r.stdout+r.stderr)[-2000:]}"); sys.exit(1)
     print(f"ok   {cmd[0]}")

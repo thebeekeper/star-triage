@@ -20,8 +20,16 @@ section is written so it can be used as-is in a launch post or README.
 
 ## 2. Verdicts written for you, not for everyone
 
-- **Personal relevance.** You describe yourself and your projects once in `config.yml`; every
-  verdict says which of your projects a repo matters for, or that it doesn't.
+- **No profile to fill in (5.4.0).** Verdicts are judged on general quality, safety and
+  usefulness for most Claude Code users. Setup doesn't ask about you; an older `about_me` still
+  works as extra context.
+- **"When you'd use it", on every note (5.4.0).** 2 or 3 concrete situations where the tool
+  helps, so you judge relevance yourself by reading them and ticking `approve`. The validator
+  rejects a new note without at least two examples. Trade-off: in auto modes, installs are
+  "generally good and safe" rather than tailored to you; the `auto_wait_hours` veto window
+  still applies.
+- **Projects are optional.** Name your projects in `contexts` and each note says which ones a
+  repo matters for (`relevant_to`); leave just `General` and nothing is lost.
 - **A hype detector.** Headline claims ("70% fewer tokens", "10x faster") are checked against
   independent reviews and labelled as measured, modelled or marketing.
 - **Clear labels.** Each note gets a type, category, verdict (Install, Try, When needed,
@@ -53,8 +61,11 @@ section is written so it can be used as-is in a launch post or README.
   can't reach before it starts, and every decision afterwards is made from that copy. The code
   that runs after Claude isn't in your repo at all, and anything Claude changes outside
   `tracker/` (config, installs.json, the plugin list) is reverted before the next step runs.
-- **Your token stays out of reach.** The GitHub token is not stored in the checkout while
-  Claude runs, only attached afterwards to push the review branch.
+- **Your token stays out of the checkout.** Our checkout doesn't store the GitHub token
+  (`persist-credentials: false`). claude-code-action adds its own token to the origin URL in
+  `.git/config` while Claude runs; star-triage puts back a clean copy right after, and logs
+  which settings were added, removed or changed (names only). Keeping Claude from reading
+  `.git/` during the step is an open item (audit SEC-20).
 - **A validator gates every run.** Only new notes for that run's repos, with valid labels and a
   risk at or above the scan's floor, are accepted. Anything else fails the run.
 
@@ -107,17 +118,46 @@ section is written so it can be used as-is in a launch post or README.
 
 - **Install a plugin, run one skill.** `/plugin marketplace add thebeekeper/star-triage`,
   `/plugin install star-triage@star-triage`, then `/star-triage:setup`. Setup creates your private notes repo,
-  asks about you and your projects, flips the one GitHub setting the workflow needs, stores your
-  Claude token as a secret and starts the first run, asking before each change. Safe to run again.
+  flips the GitHub settings the workflow needs, stores your Claude token as a secret and starts
+  the first run. Safe to run again.
+- **One plan, one yes (5.4.0).** Setup asks its few questions (repo name, optional projects, the
+  star-triage mode, subscription or API key), then shows everything it will do in one list and
+  asks "Go ahead? [Y/n]" once. Then it runs straight through. `--step-by-step` asks before
+  each step instead.
+- **Every GitHub setting explained (5.4.0).** For each setting it turns on, setup prints what it
+  is, why star-triage needs it, and where it lives (*Settings > Actions > General > Workflow
+  permissions*), so you can check or undo it later.
+- **Confirms the repo and the account (5.4.0).** Before using an existing data repo, setup shows
+  the repo, the folder and the GitHub account you're logged in as, and asks (default no). It
+  warns when the repo belongs to another account, and when a change to `github_user` would make
+  the repo read someone else's stars.
+- **Warns around the token (5.4.0).** `claude setup-token` prints the token on screen, so setup
+  says "don't share or screenshot this part" before it, and offers to clear the screen after.
+- **New repos start on `main` (5.4.0),** whatever git's own default is, and nothing in
+  star-triage assumes a branch name: the workflow uses the repo's default branch.
+- **Waits for GitHub to see the workflow (5.4.0).** GitHub sometimes misses the workflow in a
+  brand-new repo's first push. Setup polls until Actions lists it (up to a minute), pushes a
+  one-character change to the workflow file if it doesn't, and only then starts the first run.
+  If that still fails, it prints the Actions link and "click Run workflow", never a raw HTTP
+  404. The doctor runs the same check and suggests `setup --repair`.
+- **A setup command that doesn't change (5.4.0).** The plugin keeps a launcher at
+  `~/.claude/star-triage.py`, so `python "$HOME/.claude/star-triage.py" setup` works from any
+  folder and survives plugin updates (the plugin's own path has its version number in it).
+- **"Not set up yet" is not an error (5.4.0).** Before setup, the doctor prints one next step
+  and exits 0, instead of a red failure.
 - **Updates without copying code.** The engine is a GitHub Action (`@v1`) plus a Claude Code
   plugin. Your repo holds only your data and a 20-line workflow, so Action fixes reach your
   workflow by themselves, the plugin updates with one command, and a new user's repo isn't a
   wall of scripts. The doctor says when a newer plugin version is out.
+- **Says when this computer is behind (5.4.0).** Each run writes its engine version into
+  `installs.json`. When the plugin on your computer is older, the doctor and the Claude Code
+  start message say so, with the two update commands. The Action updates itself; the plugin
+  waits for you, so the two could disagree about approvals without this.
 - **Setup can be resumed.** If the first commit or push is declined or fails, running setup
   again commits the starting files and pushes them. Push errors come with the command that
   fixes them (`gh auth refresh -s workflow`, `gh auth setup-git`, `git pull --rebase`).
-- **No example profile to forget.** A new `config.yml` has an empty `about_me` and only the
-  `General` context; the doctor warns until `about_me` is filled in.
+- **No example profile to forget.** A new `config.yml` has only the `General` context and no
+  example project to replace.
 - **Tells you about the backlog.** Setup and the README say that every existing star is
   reviewed, `max_per_run` per run every 3 hours, and what to do after the first run.
 - **The startup hook finds Python.** It tries `python3`, then `python`, then `py`, so it runs
@@ -139,8 +179,9 @@ section is written so it can be used as-is in a launch post or README.
 - **One-command upgrade from v4.** `setup.py --migrate` swaps the copied code for the Action and
   plugin and keeps every note, setting and approval.
 - **Works with or without the GitHub CLI.** Without `gh`, setup prints the links to click.
-- **Integrity check after the review.** The run hashes the trusted scan copy and `.git/config`
-  before Claude starts and fails without publishing if either changed.
+- **Integrity check after the review.** The run hashes the trusted scan copy before Claude
+  starts and fails without publishing if it changed. `.git/config` is saved before and put back
+  after, because claude-code-action rewrites it itself.
 - **One bad repo or note doesn't stop a run.** A repo the scanner can't read is rated High
   and can't be installed. A note that fails the checks is left out with a warning and the rest
   are published. If Claude stops early, the notes it finished are still published and the run
@@ -177,7 +218,10 @@ section is written so it can be used as-is in a launch post or README.
 - **History.** Every automatic install and removal is one line in `.star-triage/history.jsonl`
   with the date, the item and the reason. `history` shows the last 20. A removal caused by a
   later review is recorded as "removed: downgraded by re-review".
-- **One line at startup.** In auto modes the Claude Code start message is a single line, for
-  example `star-triage auto: installed context7, ccusage; 1 waiting (6 h safety delay)`.
+- **One line at startup.** In auto modes the Claude Code start message is a single line that
+  names what waits and until when, in local time, for example
+  `star-triage auto-plus: installed context7; ponytail installs after 11:52 (6 h safety delay)`.
+- **Called "star-triage mode".** Messages and docs say "star-triage mode", so it isn't confused
+  with Claude Code's own auto mode (a permission mode).
 - **Nobody is switched silently.** The default stays manual, an existing config keeps its
   meaning, and setup writes `mode` only when you pick a different one.

@@ -48,11 +48,11 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from doctor import find_claude  # noqa: E402  (standard library only)
+from doctor import UPDATE_HOW, engine_mismatch, find_claude  # noqa: E402  (standard library only)
 
 from paths import (ENGINE_DIR, MODE_SHORT, TROUBLESHOOTING_URL, daily_limit, find_data_root,  # noqa: E402
-                   linked_data_root, read_mode, read_simple_config, running_as_plugin, safe_console,
-                   wait_hours, write_link)
+                   install_launcher, launcher_command, linked_data_root, read_mode, read_simple_config, running_as_plugin,
+                   safe_console, wait_hours, write_link)
 
 # Automatic runs use only the data repo you linked (setup, or STAR_TRIAGE_DATA), never the
 # folder Claude Code happens to be opened in: that folder may be someone else's project.
@@ -523,6 +523,26 @@ def short_name(key: str, item: dict) -> str:
     return str(item.get("name") or item.get("spec", {}).get("plugin") or key.rsplit("/", 1)[-1])
 
 
+def local_time(when: dt.datetime, now: dt.datetime | None = None) -> str:
+    """'11:52' if it is today on this computer, else 'Tue 11:52' (local time)."""
+    local = when.astimezone()
+    today = (now or dt.datetime.now(dt.timezone.utc)).astimezone().date()
+    return local.strftime("%H:%M") if local.date() == today else local.strftime("%a %H:%M")
+
+
+def names_and_more(names: list[str], most: int = 3) -> str:
+    return ", ".join(names[:most]) + (f" and {len(names) - most} more" if len(names) > most else "")
+
+
+def waiting_text(waiting: list, wait_h: int, now: dt.datetime | None = None) -> str:
+    """'ponytail installs after 11:52, brag after 12:10 (6 h safety delay)' (UT-18)."""
+    bits = [f"{short_name(k, i)} {'installs ' if not n else ''}after "
+            f"{local_time(reviewed_time(i) + dt.timedelta(hours=wait_h), now)}"
+            for n, (_, k, i) in enumerate(waiting[:3])]
+    more = f" and {len(waiting) - 3} more" if len(waiting) > 3 else ""
+    return ", ".join(bits) + more + f" ({wait_h} h safety delay)"
+
+
 def why(action: str, item: dict, old: dict | None) -> str:
     """The reason written to the history for one step."""
     old = old or {}
@@ -671,9 +691,13 @@ def run_hook() -> int:
     try:
         if running_as_plugin():
             write_link(engine=ENGINE_DIR)  # so `python star-triage.py` can find this version
+            install_launcher()  # ~/.claude/star-triage.py: a setup command that survives updates
         if not LINKED or (not (ROOT / "installs.json").exists() and not (ROOT / "config.yml").exists()):
             return 0  # no data repo linked yet: stay silent
         messages = []
+        old = engine_mismatch(ROOT)
+        if old:
+            messages.append(f"{old}. {UPDATE_HOW}")
         mode, wait_h, limit = settings()
         auto = mode != "manual"
         parts, extra = [], []  # auto modes: everything goes into one short line
@@ -716,9 +740,10 @@ def run_hook() -> int:
                     if names:
                         parts.append("installing " + ", ".join(names[:5]) + " now")
                 if waiting:
-                    parts.append(f"{len(waiting)} waiting ({wait_h} h safety delay)")
+                    parts.append(waiting_text(waiting, wait_h))
                 if capped:
-                    parts.append(f"{len(capped)} waiting (daily limit {limit})")
+                    parts.append(names_and_more([short_name(k, i) for _, k, i in capped])
+                                 + f" wait{'s' if len(capped) == 1 else ''} for tomorrow (daily limit {limit})")
                 if high:
                     parts.append(f"{len(high)} High risk, never automatic (run: python star-triage.py sync)")
             elif steps:
@@ -849,7 +874,7 @@ def main() -> int:
         return install_hook(remove=args.remove_hook)
     if not (ROOT / "config.yml").exists():
         print("No star-triage data repo found here. Run this from your data repo (the one with config.yml "
-              "and tracker/), or link one with: python <engine>/scripts/setup.py")
+              "and tracker/), or set one up with: " + launcher_command("setup"))
         return 1
 
     if args.pause or args.resume:
@@ -887,7 +912,7 @@ def main() -> int:
             print(f"\nAutomatic sync when Claude Code starts: {'on' if hook_installed() else 'off'}"
                   + ("" if hook_installed() else "  (turn on: python star-triage.py sync --install-hook)"))
             mode, wait_h, limit = settings()
-            print(f"Mode: {mode} ({MODE_SHORT[mode]})"
+            print(f"star-triage mode: {mode} ({MODE_SHORT[mode]})"
                   + (f", after a {wait_h} h safety delay, at most {limit} a day" if mode != "manual" else ""))
             if PAUSE_PATH.exists():
                 print("PAUSED: nothing automatic happens on this computer. Resume: python star-triage.py resume")

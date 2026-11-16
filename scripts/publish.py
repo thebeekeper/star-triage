@@ -123,7 +123,10 @@ def footer(waiting: str, auto: str, notes_only: bool, will_merge: bool = False) 
 
 def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
-    base = os.environ.get("BASE") or "main"
+    # The repo's default branch, from the workflow. No branch name is assumed (UT-11).
+    base = os.environ.get("BASE") or git("branch", "--show-current", check=False)
+    if not base:
+        sys.exit("publish.py: no base branch (BASE is empty and HEAD is detached).")
     pr_number = os.environ.get("PR_NUMBER", "")
     pr_branch = os.environ.get("PR_BRANCH", "")
     waiting = os.environ.get("WAITING", "0")

@@ -117,7 +117,7 @@ def main() -> int:
             return 1
         return switch(args[0])
     current = read_mode(read_simple_config(CONFIG_PATH))
-    print(f"Mode: {current}\n")
+    print(f"star-triage mode: {current}\n")
     names = list(MODES)
     for n, name in enumerate(names, 1):
         print(f"  {n}) {name + ':':11}{MODES[name]}{'  (current)' if name == current else ''}")

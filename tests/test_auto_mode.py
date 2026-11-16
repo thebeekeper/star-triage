@@ -188,18 +188,54 @@ def test_history_undo() -> None:
     check("history: the undo is on record", [r["why"] for r in sync.history_read()[-2:]] == ["removed: undone by you"] * 2)
 
 
-def test_hook_message() -> None:
-    world("mode: auto\n", [item("context7"), item("ccusage"), item("later", hours=1)])
-    run("--background")
+def hook() -> str:
     (CLAUDE / "star-triage.json").write_text(json.dumps({"data": str(DATA)}), encoding="utf-8")
-    env = dict(os.environ)
-    res = subprocess.run([sys.executable, str(ENGINE / "scripts" / "sync.py"), "--hook"], cwd=TMP, env=env,
+    (DATA / ".star-triage" / "hook.json").unlink(missing_ok=True)  # let it check again right away
+    res = subprocess.run([sys.executable, str(ENGINE / "scripts" / "sync.py"), "--hook"], cwd=TMP, env=dict(os.environ),
                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
-    line = (json.loads(res.stdout or "{}").get("systemMessage") or "")
-    check("hook: one line says what auto mode did and what waits",
-          line == "star-triage auto: installed ccusage, context7; 1 waiting (6 h safety delay)")
-    if line != "star-triage auto: installed ccusage, context7; 1 waiting (6 h safety delay)":
-        print("     got:", repr(line), res.stderr[-300:])
+    return (json.loads(res.stdout or "{}").get("systemMessage") or "") + ("" if res.returncode == 0 else res.stderr)
+
+
+def test_hook_message() -> None:
+    later = item("later", hours=1)
+    world("mode: auto\n", [item("context7"), item("ccusage"), later])
+    run("--background")
+    at = (sync.reviewed_time(later) + dt.timedelta(hours=6)).astimezone()
+    when = at.strftime("%H:%M") if at.date() == dt.datetime.now().astimezone().date() else at.strftime("%a %H:%M")
+    want = f"star-triage auto: installed ccusage, context7; later installs after {when} (6 h safety delay)"
+    line = hook()
+    check("hook: one line says what the star-triage mode did, and what waits until when (local time)", line == want)
+    if line != want:
+        print("     got:", repr(line), "\n     want:", repr(want))
+
+    now = dt.datetime(2026, 11, 16, 9, 0, tzinfo=dt.timezone.utc)
+    check("hook: a time later today is HH:MM, another day gets the weekday",
+          sync.local_time(now + dt.timedelta(minutes=1), now) == (now + dt.timedelta(minutes=1)).astimezone().strftime("%H:%M")
+          and sync.local_time(now + dt.timedelta(days=2), now) == (now + dt.timedelta(days=2)).astimezone().strftime("%a %H:%M"))
+    waits = [("install", f"x/w{n}", item(f"w{n}", hours=1)) for n in range(5)]
+    text = sync.waiting_text(waits, 6)
+    check("hook: several waiting items are named, the rest counted",
+          text.startswith("w0 installs after ") and ", w1 after " in text and text.endswith(" and 2 more (6 h safety delay)"))
+
+    # a1 installs now (in this process, with the stand-in installer), so the hook finds the
+    # limit used up and starts no background install of its own.
+    world("mode: auto-plus\nauto_daily_limit: 1\n", [item("a1"), item("a2"), item("a3")])
+    run("--background")
+    line = hook()
+    check("hook: items over the daily limit are named", "a2, a3 wait for tomorrow (daily limit 1)" in line)
+    if "wait for tomorrow" not in line:
+        print("     got:", repr(line))
+
+    world("mode: manual\n", [])
+    installs = json.loads((DATA / "installs.json").read_text(encoding="utf-8"))
+    installs["engine_version"] = "99.0.0"
+    (DATA / "installs.json").write_text(json.dumps(installs), encoding="utf-8")
+    line = hook()
+    check("hook: an older plugin than the reviews' engine is named, with the update commands",
+          "your reviews use 99.0.0" in line and "claude plugin marketplace update star-triage" in line
+          and "claude plugin update star-triage@star-triage" in line)
+    if "99.0.0" not in line:
+        print("     got:", repr(line))
 
 
 def test_mode_command() -> None:
@@ -228,7 +264,7 @@ def test_mode_command() -> None:
 
     res = mode()
     check("mode: with no word it shows the current mode and the three choices, and changes nothing",
-          res.returncode == 0 and "Mode: auto\n" in res.stdout and all(m in res.stdout for m in paths.MODES)
+          res.returncode == 0 and "star-triage mode: auto\n" in res.stdout and all(m in res.stdout for m in paths.MODES)
           and (repo / "config.yml").read_text(encoding="utf-8") == old)
     res = mode("auto-plus")
     text = (repo / "config.yml").read_text(encoding="utf-8")

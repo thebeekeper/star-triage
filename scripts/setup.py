@@ -1,23 +1,26 @@
-"""Guided setup for star-triage. Safe to run again; it asks before every change.
+"""Guided setup for star-triage. Safe to run again.
 
-    python star-triage.py setup                from your data repo, once it exists
-    python <engine>/scripts/setup.py           first time (the /star-triage:setup skill
-                                               shows the exact path)
+    python "$HOME/.claude/star-triage.py" setup   first time, from any folder (the plugin keeps
+                                                  this launcher there; the path never changes)
+    python star-triage.py setup                   from your data repo, once it exists
+    ... --step-by-step   ask before every single step, as setup did before 5.4
     ... --check          only check, change nothing (same as doctor)
     ... --skip-config    keep config.yml as it is
+    ... --repair         push a small change to the workflow file, so GitHub Actions registers it
     ... --migrate        upgrade a v4 copy (with its own scripts/) to the Action + plugin
 
-What it does:
-  1. Finds your data repo, or creates one: a private GitHub repo with config.yml, tracker/,
-     a launcher and a 20-line workflow that calls the star-triage Action.
-  2. Writes config.yml from a few questions (about you, your projects).
-  3. Sets your private GitHub commit email for that repo, if none is set, then commits and
-     pushes your settings (and the starting files, if the first commit never happened).
-  4. Lets the workflow open pull requests (a repo setting).
-  5. Stores your Claude token as a repo secret. The token goes from `claude setup-token`
+How it works: a few questions first (which repo, your projects, the star-triage mode, how the
+workflow uses Claude), then ONE plan and one "Go ahead?". Then it runs straight through:
+  1. Creates your data repo (a private GitHub repo with config.yml, tracker/, a launcher and a
+     20-line workflow that calls the star-triage Action), on branch main, and pushes it.
+     An existing data repo is used only after you confirm the repo and the GitHub account.
+  2. Writes config.yml from your answers and pushes it.
+  3. Applies the GitHub settings star-triage needs, printing for each what it is, why, and
+     where it lives on GitHub so you can check or undo it.
+  4. Stores your Claude token as a repo secret. The token goes from `claude setup-token`
      straight into GitHub's hidden prompt. It is never written to a file or shown to Claude.
-  6. Starts the first run.
-Steps 1 (creating) and 4 to 6 use the GitHub CLI (https://cli.github.com). Without it you
+  5. Waits until GitHub Actions has registered the workflow, then starts the first run.
+Creating the repo and steps 3 to 5 use the GitHub CLI (https://cli.github.com). Without it you
 get links instead.
 """
 from __future__ import annotations
@@ -36,15 +39,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
-from doctor import CONFIG_PATH, ROOT, WORKFLOW_FILE, find_claude, gh_json, gh_ready, run  # noqa: E402
+from doctor import (CONFIG_PATH, ROOT, WORKFLOW_FILE, actions_hint, find_claude, gh_json,  # noqa: E402
+                    gh_ready, run, workflow_registered)
 from mode import set_mode_text  # noqa: E402
 from paths import (DEFAULT_MAX_PER_RUN, ENGINE_DIR, MODES, TROUBLESHOOTING_URL, is_data_repo,  # noqa: E402
                    read_mode, running_as_plugin, safe_console, write_link)
 
 TEMPLATE_DIR = ENGINE_DIR / "template"
+WORKFLOW_PATH = f".github/workflows/{WORKFLOW_FILE}"
 # Files a v4 copy carried itself; the Action and the plugin provide them now.
 OLD_ENGINE_PATHS = ["scripts", "prompts", "docs", "LICENSE", ".claude/skills/star-triage",
                     ".claude/skills/star-triage-sync", ".claude/skills/star-triage-setup"]
+# Set by setup for the copy of itself it starts inside a data repo it has just made.
+STAGE = os.environ.get("STAR_TRIAGE_SETUP_STAGE", "")  # "created" or "approved" (plan said yes)
+STEP_BY_STEP = "--step-by-step" in sys.argv[1:]
 
 TOP_KEY = re.compile(r"^[A-Za-z_][\w-]*:")
 
@@ -77,6 +85,11 @@ def yes(question: str, default: bool = True) -> bool:
     return default if not answer else answer.startswith("y")
 
 
+def confirm(question: str) -> bool:
+    """A step the plan already covers: asked only with --step-by-step."""
+    return yes(question) if STEP_BY_STEP else True
+
+
 def ask_lines(prompt: str) -> list[str]:
     say(prompt)
     lines = []
@@ -93,13 +106,40 @@ def ask_lines(prompt: str) -> list[str]:
 
 def interactive(cmd: list[str]) -> int:
     """Run a command attached to this terminal, so its own prompts work."""
-    import shutil
     exe = shutil.which(cmd[0]) or cmd[0]
     try:
         return subprocess.call([exe, *cmd[1:]], cwd=ROOT)
     except OSError as exc:
         say(f"Could not run {cmd[0]}: {exc}")
         return 127
+
+
+def explain(what: str, why: str, where: str) -> None:
+    """Every GitHub setting setup touches: what it is, why star-triage needs it, where it lives."""
+    say(f"\n{what}")
+    say(f"  Why:   {why}")
+    say(f"  Where: {where}")
+
+
+def offer(what: str, why: str, where: str) -> bool:
+    explain(what, why, where)
+    return yes("  I'll turn this on for you on GitHub. OK?") if STEP_BY_STEP else True
+
+
+def show_plan(lines: list[str]) -> bool:
+    say("\nHere is what setup will do:")
+    for line in lines:
+        say(f"  - {line}")
+    say("Nothing else is asked after this, except pasting your Claude token at a hidden prompt.")
+    return yes("Go ahead?")
+
+
+def clear_screen() -> None:
+    if os.name == "nt":
+        subprocess.call("cls", shell=True)
+    else:
+        subprocess.call(["clear"])
+        print("\033[3J", end="", flush=True)  # also the scrollback, where the terminal supports it
 
 
 # ----------------------------------------------------------------- config.yml editing
@@ -139,35 +179,30 @@ def q(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)  # a JSON string is a valid YAML string
 
 
-def configure(gh_login: str | None, owner: str) -> bool:
-    """Ask questions and rewrite config.yml. Returns True if it changed."""
-    try:
-        cfg = doctor.load_yaml(CONFIG_PATH) or {}
-    except Exception:
-        cfg = {}
-    original = CONFIG_PATH.read_text(encoding="utf-8")
-    text = original
+def user_change_warning(current: str, new: str, owner: str) -> str | None:
+    """Changing whose stars an existing repo reads gets its own warning (UT-5)."""
+    before, after = (current or owner).strip(), (new or owner).strip()
+    if before and after and before.lower() != after.lower():
+        return f"This repo will start reading {after}'s stars instead of {before}'s."
+    return None
 
+
+def ask_config(text: str, cfg: dict, gh_login: str | None, owner: str, existing: bool) -> str:
+    """Ask the config questions and return config.yml's new text (nothing is written here)."""
     say("Press Enter to keep the value in [brackets].")
-    say("Prefer to talk it through? Open Claude Code in this folder and run /star-triage:setup,")
-    say("then come back and run: python star-triage.py setup --skip-config\n")
 
     current_user = cfg.get("github_user") or ""
-    user = ask("Whose stars should be read (GitHub username)", current_user or gh_login or "")
+    user = ask("Whose stars should be read (GitHub username)", current_user or gh_login or owner or "")
     # Left empty, the workflow reads the stars of the repo's owner, which is usually you.
     if user != current_user and not (not current_user and user.lower() == owner.lower()):
-        text = set_setting(text, "github_user", [f"github_user: {q(user)}"])
+        warning = user_change_warning(current_user, user, owner) if existing else None
+        if warning and not yes(f"{warning} Change it?", default=False):
+            say("Kept.")
+        else:
+            text = set_setting(text, "github_user", [f"github_user: {q(user)}"])
 
-    say("\nA few lines about you: what you build, languages, what you want from repos.")
-    say("Claude uses this to judge what is relevant to you and what is hype.")
-    current_about = " ".join(str(cfg.get("about_me") or "").split())
-    if current_about:
-        say(f"Current: {current_about[:160]}{'...' if len(current_about) > 160 else ''}")
-    about = ask_lines("Type it (empty line to finish, or just Enter to keep the current text):")
-    if about:
-        text = set_setting(text, "about_me", ["about_me: >"] + [f"  {line}" for line in about])
-
-    say("\nYour projects and interests. Each becomes a 'relevant_to' label on notes.")
+    say("\nOptional: your projects. Each becomes a 'relevant_to' label on notes. Every note also")
+    say("lists 2 or 3 examples of when you'd use the tool, so you can skip this.")
     names = [str(c.get("name")) for c in cfg.get("contexts") or [] if isinstance(c, dict)]
     if names:
         say("Current: " + ", ".join(names))
@@ -190,7 +225,8 @@ def configure(gh_login: str | None, owner: str) -> bool:
     if mpr.isdigit() and 1 <= int(mpr) <= 25:
         text = set_setting(text, "max_per_run", [f"max_per_run: {int(mpr)}"])
 
-    say("\nWho approves installs? (Change it later with: python star-triage.py mode)")
+    say("\nThe star-triage mode: who approves installs? (Not Claude Code's own auto mode.")
+    say("Change it later with: python star-triage.py mode)")
     names = list(MODES)
     for n, name in enumerate(names, 1):
         say(f"  {n}) {name + ':':11}{MODES[name]}")
@@ -202,23 +238,53 @@ def configure(gh_login: str | None, owner: str) -> bool:
     # config that still uses auto_merge.
     if chosen != current or "mode" in cfg:
         text = set_mode_text(text, chosen)
+    return text
 
+
+def save_config(path: Path, original: str, text: str) -> bool:
+    """Write config.yml if it changed and is still valid. Returns True if it was written."""
     if text == original:
-        say("\nconfig.yml unchanged.")
+        say("config.yml unchanged.")
         return False
-    CONFIG_PATH.write_text(text, encoding="utf-8")
-    problems = [r for r in doctor.check_config() if r.status == "fail"]
+    path.write_text(text, encoding="utf-8")
+    problems = [r for r in doctor.check_config(path) if r.status == "fail"]
     if problems:
-        CONFIG_PATH.write_text(original, encoding="utf-8")
-        say("\nThat produced an invalid config.yml, so nothing was changed:")
+        path.write_text(original, encoding="utf-8")
+        say("That produced an invalid config.yml, so nothing was changed:")
         for r in problems:
             say(f"  - {r.label}: {r.fix}")
         return False
-    say("\nconfig.yml updated.")
+    say("config.yml updated.")
     return True
 
 
+def read_config(path: Path) -> tuple[str, dict]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        cfg = doctor.load_yaml(path) or {}
+    except Exception:
+        cfg = {}
+    return text, cfg if isinstance(cfg, dict) else {}
+
+
+def ask_auth() -> str:
+    say("\nHow should the workflow use Claude?")
+    say("  1) Your Claude subscription (Pro or Max). Recommended.")
+    say("  2) An Anthropic API key (pay per use, from console.anthropic.com).")
+    return "apikey" if ask("Choose 1 or 2", "1") == "2" else "oauth"
+
+
 # ----------------------------------------------------------------- git
+
+def git_in(path: Path, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    return run(["git", *args], cwd=path, timeout=timeout)
+
+
+def start_on_main(path: Path) -> None:
+    """A repo with no commits yet starts on `main`, whatever git's own default is (UT-11)."""
+    if git_in(path, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
+        git_in(path, "symbolic-ref", "HEAD", "refs/heads/main")
+
 
 def ensure_email(login: dict | None, where: Path | None = None) -> None:
     where = where or ROOT
@@ -235,11 +301,13 @@ def ensure_email(login: dict | None, where: Path | None = None) -> None:
     elif m and int(m.group(1)) != int(login["id"]):
         say(f"Your commit email {email} belongs to a DIFFERENT GitHub account,")
         say("so your commits would show someone else as the author.")
-        if yes(f"Use {noreply} for this repo?"):
+        if confirm(f"Use {noreply} for this repo?"):
             run(["git", "config", "user.email", noreply], cwd=where)
+            say(f"Commit email for this repo: {noreply}")
     elif not email:
-        if yes(f"git has no commit email. Use your private GitHub address {noreply} for this repo?"):
+        if confirm(f"git has no commit email. Use your private GitHub address {noreply} for this repo?"):
             run(["git", "config", "user.email", noreply], cwd=where)
+            say(f"Commit email for this repo: {noreply} (your private GitHub address)")
     else:
         say(f"Commit email: {email}. This is public on GitHub. Your private alternative is {noreply}")
         say(f"  (to switch: git config user.email {noreply})")
@@ -267,23 +335,57 @@ def push(path: Path) -> bool:
     return False
 
 
+def commit_and_push(path: Path, message: str, files: list[str] | None = None) -> bool:
+    """Commit and push. With `files`, only those paths are staged and committed, and they are
+    listed first; anything else in the folder is left alone. True when it reached GitHub."""
+    only = ["--", *files] if files else []
+    if files is None:
+        git_in(path, "add", "-A")
+    elif files:
+        git_in(path, "add", *only)
+    else:
+        return False
+    if not git_in(path, "status", "--porcelain", *only).stdout.strip():
+        return False
+    if files:
+        say("Files to commit:")
+        for rel in files:
+            say(f"  {rel}")
+    if not confirm(f"Commit these changes ('{message}') and push them to GitHub?"):
+        say("Skipped. Commit and push them yourself before the next run.")
+        return False
+    res = git_in(path, "commit", "-q", "-m", message, *only)
+    if res.returncode:
+        say(res.stderr.strip() or res.stdout.strip())
+        return False
+    return push(path)
+
+
+def template_files() -> list[str]:
+    return [src.relative_to(TEMPLATE_DIR).as_posix() for src in sorted(TEMPLATE_DIR.rglob("*"))
+            if src.is_file() and "__pycache__" not in src.parts]
+
+
+def unpushed(path: Path) -> list[str]:
+    """Starting files and config.yml that differ from the last commit, or were never committed."""
+    rels = [rel for rel in template_files() if (path / rel).exists()]
+    listed = (git_in(path, "-c", "core.quotePath=false", "ls-files", "--modified", "--others",
+                     "--exclude-standard", "--", *rels).stdout
+              + git_in(path, "-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--", *rels).stdout)
+    return sorted({line for line in listed.splitlines() if line})
+
+
 def commit_settings() -> None:
     """Commit and push config.yml, plus any starting file that never got committed (the first
     commit was declined or failed). Also pushes a commit that never reached GitHub."""
-    rels = [src.relative_to(TEMPLATE_DIR).as_posix() for src in sorted(TEMPLATE_DIR.rglob("*"))
-            if src.is_file() and "__pycache__" not in src.parts]
-    rels = [rel for rel in rels if (ROOT / rel).exists()]
-    listed = (git_in(ROOT, "-c", "core.quotePath=false", "ls-files", "--modified", "--others",
-                     "--exclude-standard", "--", *rels).stdout
-              + git_in(ROOT, "-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--", *rels).stdout)
-    changed = sorted({line for line in listed.splitlines() if line})
+    changed = unpushed(ROOT)
     first = git_in(ROOT, "rev-parse", "--verify", "-q", "HEAD").returncode != 0
     if changed:
         commit_and_push(ROOT, "Start star-triage" if first else "Configure star-triage", changed)
         return
     ahead = git_in(ROOT, "rev-list", "--count", "@{u}..HEAD")
     if not first and (ahead.returncode != 0 or ahead.stdout.strip() != "0"):
-        if yes("Your last commit is not on GitHub yet. Push it now?"):
+        if confirm("Your last commit is not on GitHub yet. Push it now?"):
             push(ROOT)
         else:
             say("Skipped. The workflow reads everything from GitHub, so push before the first run.")
@@ -293,34 +395,50 @@ def commit_settings() -> None:
 
 # ----------------------------------------------------------------- GitHub settings
 
+def actions_url(repo: str) -> str:
+    return f"https://github.com/{repo}/settings/actions"
+
+
+def enable_actions(repo: str) -> None:
+    actions = gh_json("api", f"repos/{repo}/actions/permissions") or {}
+    if actions and not actions.get("enabled"):
+        if offer("Turn on GitHub Actions for this repo",
+                 "the reviews run as a GitHub Actions workflow in your repo.",
+                 f"your repo > Settings > Actions > General > Actions permissions  ({actions_url(repo)})"):
+            res = run(["gh", "api", "-X", "PUT", f"repos/{repo}/actions/permissions", "-F", "enabled=true"])
+            say("  Done." if res.returncode == 0 else "  That did not work. Turn it on at the place above.")
+    else:
+        say("GitHub Actions is on for this repo.")
+    state = (gh_json("api", f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}") or {}).get("state", "")
+    if state.startswith("disabled") and offer(
+            "Turn the star-triage workflow back on",
+            "GitHub switched it off (it does that after 60 days without activity, or someone disabled it).",
+            f"your repo > Actions > star-triage > ... > Enable workflow  (https://github.com/{repo}/actions)"):
+        res = run(["gh", "workflow", "enable", WORKFLOW_FILE, "--repo", repo])
+        say("  Done." if res.returncode == 0 else "  That did not work. Enable it at the place above.")
+
+
 def allow_pull_requests(repo: str) -> None:
     perms = gh_json("api", f"repos/{repo}/actions/permissions/workflow")
+    where = f"your repo > Settings > Actions > General > Workflow permissions  ({actions_url(repo)})"
     if perms is None:
-        say(f"Could not read the Actions settings. Set it by hand: https://github.com/{repo}/settings/actions")
+        say(f"Could not read the Actions settings. Set it by hand at {where}: tick 'Allow GitHub Actions")
+        say("to create and approve pull requests', then Save.")
         return
     if perms.get("can_approve_pull_request_reviews"):
-        say("Actions may already open pull requests.")
+        say("The workflow may open pull requests (already on).")
         return
-    say("The workflow needs permission to open the review pull requests.")
-    if not yes("Turn on 'Allow GitHub Actions to create and approve pull requests'?"):
+    if not offer("Let the workflow open pull requests ('Allow GitHub Actions to create and approve pull requests')",
+                 "each run puts its new notes in a pull request, for you to read and merge.", where):
+        say("  Skipped. Runs fail at the last step until this is on.")
         return
     res = run(["gh", "api", "-X", "PUT", f"repos/{repo}/actions/permissions/workflow",
                "-f", f"default_workflow_permissions={perms.get('default_workflow_permissions', 'read')}",
                "-F", "can_approve_pull_request_reviews=true"])
     if res.returncode == 0:
-        say("Done.")
+        say("  Done.")
     else:
-        say(f"That did not work ({res.stderr.strip()}).")
-        say(f"Tick it by hand under Workflow permissions: https://github.com/{repo}/settings/actions")
-
-
-def enable_actions(repo: str) -> None:
-    actions = gh_json("api", f"repos/{repo}/actions/permissions") or {}
-    if actions and not actions.get("enabled") and yes("GitHub Actions is off for this repo. Turn it on?"):
-        run(["gh", "api", "-X", "PUT", f"repos/{repo}/actions/permissions", "-F", "enabled=true"])
-    state = (gh_json("api", f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}") or {}).get("state", "")
-    if state.startswith("disabled") and yes("The star-triage workflow is disabled. Enable it?"):
-        run(["gh", "workflow", "enable", WORKFLOW_FILE, "--repo", repo])
+        say("  That did not work. Tick it by hand at the place above, then Save.")
 
 
 def install_hint() -> str:
@@ -329,55 +447,142 @@ def install_hint() -> str:
     return "curl -fsSL https://claude.ai/install.sh | bash"
 
 
-def set_secret(repo: str) -> None:
-    names = {s.get("name") for s in (gh_json("secret", "list", "--repo", repo, "--json", "name") or [])}
-    have = names & {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+def secret_names(repo: str) -> set[str] | None:
+    found = gh_json("secret", "list", "--repo", repo, "--json", "name")
+    if found is None:
+        return None
+    return {s.get("name") for s in found} & {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+
+
+def set_secret(repo: str, how: str | None = None) -> None:
+    have = secret_names(repo) or set()
     if have:
-        say(f"Already set: {', '.join(sorted(have))}.")
-        if not yes("Replace it?", default=False):
+        say(f"Claude credentials already set: {', '.join(sorted(have))}.")
+        if not STEP_BY_STEP or not yes("Replace it?", default=False):
+            if not STEP_BY_STEP:
+                say("  (To replace it: run setup with --step-by-step.)")
             return
-    say("How should the workflow use Claude?")
-    say("  1) Your Claude subscription (Pro or Max). Recommended.")
-    say("  2) An Anthropic API key (pay per use, from console.anthropic.com).")
-    choice = ask("Choose 1 or 2", "1")
-    if choice == "2":
+    how = how or ask_auth()
+    where = f"your repo > Settings > Secrets and variables > Actions  (https://github.com/{repo}/settings/secrets/actions)"
+    if how == "apikey":
+        explain("Store your Anthropic API key as a repo secret (ANTHROPIC_API_KEY)",
+                "the workflow uses it to run Claude for the reviews.", where)
         say("\nPaste your API key at the hidden prompt below. It goes straight to GitHub.")
-        interactive(["gh", "secret", "set", "ANTHROPIC_API_KEY", "--repo", repo])
+        if interactive(["gh", "secret", "set", "ANTHROPIC_API_KEY", "--repo", repo]) == 0:
+            say("Secret saved.")
+        else:
+            say(f"That did not work. Add ANTHROPIC_API_KEY by hand at {where}")
         return
     claude = find_claude()
     if not claude:
         say("Claude Code is not installed (or not on PATH). Install it, then run this script again:")
         say(f"  {install_hint()}")
         return
-    say("\nNext, `claude setup-token` opens your browser to log in, then prints a long token.")
-    say("Copy that token. You will paste it at a hidden prompt right after, which sends it")
-    say("straight to GitHub as a secret. Do not paste it anywhere else.")
-    if not yes("Ready to start?"):
+    explain("Store your Claude token as a repo secret (CLAUDE_CODE_OAUTH_TOKEN)",
+            "the workflow uses it to run Claude for the reviews, on your subscription.", where)
+    say("\n" + "!" * 72)
+    say("  CAREFUL: the next part shows your Claude token on screen.")
+    say("  Don't share, paste into a chat, or screenshot anything from here until setup has")
+    say("  cleared the screen. Anyone with the token can use your Claude subscription.")
+    say("!" * 72)
+    say("`claude setup-token` opens your browser to log in, then prints a long token. Copy it.")
+    say("You then paste it at a hidden prompt, which sends it straight to GitHub as a secret.")
+    if STEP_BY_STEP and not yes("Ready to start?"):
         say("Skipped. Run setup again when you're ready.")
         return
+    if not STEP_BY_STEP:
+        ask("Press Enter to start")
     if interactive([claude, "setup-token"]) != 0:
-        say("setup-token did not finish. Run this script again when ready.")
+        say("setup-token did not finish. Run setup again when ready.")
         return
     say("\nNow paste the token (input is hidden) and press Enter:")
-    if interactive(["gh", "secret", "set", "CLAUDE_CODE_OAUTH_TOKEN", "--repo", repo]) == 0:
-        say("Secret saved. You can clear your terminal now so the token is not left on screen.")
+    saved = interactive(["gh", "secret", "set", "CLAUDE_CODE_OAUTH_TOKEN", "--repo", repo]) == 0
+    say("Secret saved." if saved else f"That did not work. Add CLAUDE_CODE_OAUTH_TOKEN by hand at {where}")
+    say("Your token is still on screen above.")
+    if yes("Clear the screen now?"):
+        clear_screen()
+        say("Screen cleared. Setup continues.")
+    else:
+        say("Clear it yourself before you share anything from this window (cls on Windows, clear elsewhere).")
+    say("If the token was ever shared by mistake, make a new one and replace the secret: see")
+    say(f"'Claude token was shared' in {TROUBLESHOOTING_URL}")
 
 
-def first_run(repo: str) -> None:
+# ----------------------------------------------------------------- first run (UT-9)
+
+def wait_registered(repo: str, seconds: int = 60, every: int = 5) -> bool:
+    """Poll GitHub until Actions lists the star-triage workflow."""
+    for i in range(max(1, seconds // every)):
+        if workflow_registered(repo):
+            return True
+        if i < seconds // every - 1:
+            time.sleep(every)
+    return False
+
+
+def nudge_workflow(path: Path) -> bool:
+    """Commit and push a one-character change to the workflow file (a trailing blank line, added
+    or taken away). GitHub looks at a workflow again when a push changes it."""
+    wf = path / WORKFLOW_PATH
     try:
-        per_run = int((doctor.load_yaml(CONFIG_PATH) or {}).get("max_per_run", DEFAULT_MAX_PER_RUN))
+        text = wf.read_bytes()
+    except OSError:
+        say(f"{WORKFLOW_PATH} is missing in {path}. Run setup again to add it.")
+        return False
+    body = text.rstrip(b"\r\n") + b"\n"
+    wf.write_bytes(body if text != body else body + b"\n")
+    git_in(path, "add", "--", WORKFLOW_PATH)
+    res = git_in(path, "commit", "-q", "-m", "Register the star-triage workflow with GitHub Actions",
+                 "--", WORKFLOW_PATH)
+    if res.returncode:
+        say(res.stderr.strip() or res.stdout.strip())
+        return False
+    return push(path)
+
+
+def ensure_registered(repo: str, path: Path) -> bool:
+    """Make sure GitHub Actions knows the workflow before anything tries to start it."""
+    if workflow_registered(repo):
+        return True
+    say("Waiting for GitHub Actions to pick up the workflow (up to a minute)...")
+    if wait_registered(repo):
+        say("GitHub Actions has the star-triage workflow.")
+        return True
+    say("Not there yet. GitHub sometimes misses the workflow in a brand-new repo's first push.")
+    say("Pushing a small change to the workflow file, which makes it look again...")
+    if nudge_workflow(path) and wait_registered(repo):
+        say("GitHub Actions has the star-triage workflow.")
+        return True
+    say("GitHub still hasn't listed the workflow. " + actions_hint(repo))
+    return False
+
+
+def start_workflow(repo: str, tries: int = 4) -> bool:
+    for i in range(tries):
+        if run(["gh", "workflow", "run", WORKFLOW_FILE, "--repo", repo, "-f", "max=3"]).returncode == 0:
+            return True
+        if i < tries - 1:
+            time.sleep(10)  # just registered: GitHub can take a few seconds more to accept a run
+    return False
+
+
+def first_run(repo: str, path: Path | None = None) -> None:
+    path = path or ROOT
+    try:
+        per_run = int((doctor.load_yaml(path / "config.yml") or {}).get("max_per_run", DEFAULT_MAX_PER_RUN))
     except Exception:
         per_run = DEFAULT_MAX_PER_RUN
     say("Every repo you have starred so far gets reviewed, newest first. After this first run the")
     say(f"workflow takes {per_run} per run (max_per_run in config.yml), every 3 hours, until it has caught up.")
     say("Each review is a short Claude session. To go slower, lower max_per_run; to leave repos out,")
-    say("list them under ignore in config.yml.")
-    if not yes("Start the first run now, with 3 repos?"):
-        say(f"Later: GitHub > Actions > star-triage > Run workflow, or gh workflow run {WORKFLOW_FILE} --repo {repo}")
+    say("list them under ignore in config.yml. With no stars yet, star a few repos first.")
+    if STEP_BY_STEP and not yes("Start the first run now, with 3 repos?"):
+        say(f"Later: {actions_hint(repo)}")
         return
-    res = run(["gh", "workflow", "run", WORKFLOW_FILE, "--repo", repo, "-f", "max=3"])
-    if res.returncode != 0:
-        say("Could not start it: " + res.stderr.strip())
+    if not ensure_registered(repo, path):
+        return
+    if not start_workflow(repo):
+        say("Could not start the first run from here. " + actions_hint(repo))
         return
     time.sleep(4)
     runs = gh_json("run", "list", "--repo", repo, "--workflow", WORKFLOW_FILE, "--limit", "1", "--json", "url")
@@ -386,8 +591,18 @@ def first_run(repo: str) -> None:
     say("When it has finished:")
     say("  1. Check the run is green. If it is red, the run page says why and how to fix it.")
     say(f"  2. Merge the pull request if one is waiting: https://github.com/{repo}/pulls")
-    say("     (a run that approves no installs merges its notes by itself).")
-    say(f"  3. Get the notes onto this computer: run `git pull` in {ROOT}")
+    say("     (whether it waits depends on your star-triage mode).")
+    say(f"  3. Get the notes onto this computer: run `git pull` in {path}")
+
+
+def check_default_branch(repo: str, path: Path) -> None:
+    """Say so if the branch setup pushed is not the repo's default (nothing assumes a name)."""
+    info = gh_json("repo", "view", repo, "--json", "defaultBranchRef") or {}
+    default = (info.get("defaultBranchRef") or {}).get("name")
+    mine = git_in(path, "branch", "--show-current").stdout.strip()
+    if default and mine and default != mine:
+        say(f"Note: GitHub's default branch for {repo} is '{default}', but this folder is on '{mine}'.")
+        say("The workflow runs on the default branch. Switch with: git switch " + default)
 
 
 def automatic_installs() -> None:
@@ -427,43 +642,27 @@ def copy_template(target: Path, overwrite: tuple[str, ...] = ()) -> list[str]:
     return written
 
 
-def git_in(path: Path, *args: str, timeout: int = 120) -> subprocess.CompletedProcess:
-    return run(["git", *args], cwd=path, timeout=timeout)
+def new_repo_plan(login: str, name: str, target: Path, auth: str | None) -> list[str]:
+    token = ("store your Anthropic API key as a repo secret (you paste it at a hidden prompt)" if auth == "apikey"
+             else "store your Claude token as a repo secret (`claude setup-token`, then you paste it at a "
+                  "hidden prompt)")
+    return [f"create the private repo {login}/{name} in {target}, on branch main, with your settings, "
+            "and push it",
+            "make sure GitHub Actions is on, and let its workflow open pull requests (repo settings)",
+            token,
+            "wait until GitHub Actions has registered the workflow, then start the first run (3 repos)"]
 
 
-def commit_and_push(path: Path, message: str, files: list[str] | None = None) -> None:
-    """Commit and push. With `files`, only those paths are staged and committed, and they are
-    listed first; anything else in the folder is left alone."""
-    only = ["--", *files] if files else []
-    if files is None:
-        git_in(path, "add", "-A")
-    elif files:
-        git_in(path, "add", *only)
-    else:
-        return
-    if not git_in(path, "status", "--porcelain", *only).stdout.strip():
-        return
-    if files:
-        say("Files to commit:")
-        for rel in files:
-            say(f"  {rel}")
-    if not yes(f"Commit these changes ('{message}') and push them to GitHub?"):
-        say("Skipped. Commit and push them yourself before the next run.")
-        return
-    res = git_in(path, "commit", "-q", "-m", message, *only)
-    if res.returncode:
-        say(res.stderr.strip() or res.stdout.strip())
-        return
-    push(path)
-
-
-def create_data_repo(login: dict | None) -> Path | None:
-    """Make a new private GitHub repo with the template, cloned next to the user's documents."""
+def create_data_repo(login: dict | None) -> tuple[Path, str | None] | None:
+    """Ask for a name and folder, ask the config questions, show the plan, then create the
+    private repo, push it, and return (folder, auth choice)."""
     if not login:
         say("To create your data repo automatically, install the GitHub CLI (https://cli.github.com),")
         say("run `gh auth login`, then run setup again. Or by hand: create an empty private repo on")
         say("GitHub, clone it, and run setup from inside that folder.")
         return None
+    say(f"It will belong to the GitHub account you're logged in as: {login['login']}.")
+    say("(Another account? Stop here, run `gh auth switch` or `gh auth login`, and start again.)")
     name = ask("Name for your new private GitHub repo", "my-stars")
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name):
         say("That is not a valid repo name.")
@@ -473,18 +672,52 @@ def create_data_repo(login: dict | None) -> Path | None:
     if target.exists():
         say(f"{target} already exists. Pick another name, or run setup from inside that folder.")
         return None
+
+    original = (TEMPLATE_DIR / "config.yml").read_text(encoding="utf-8")
+    text, auth = original, None
+    if STEP_BY_STEP:
+        if not yes(f"Create github.com/{login['login']}/{name} (private) and clone it to {target}?"):
+            return None
+    else:
+        say("")
+        text = ask_config(original, doctor.load_yaml(TEMPLATE_DIR / "config.yml") or {},
+                          login["login"], login["login"], existing=False)
+        auth = ask_auth()
+        if not show_plan(new_repo_plan(login["login"], name, target, auth)):
+            say("Nothing was changed.")
+            return None
+
     parent.mkdir(parents=True, exist_ok=True)
-    if not yes(f"Create github.com/{login['login']}/{name} (private) and clone it to {target}?"):
-        return None
     res = run(["gh", "repo", "create", name, "--private", "--clone",
                "--description", "My GitHub stars, reviewed by star-triage"], cwd=parent, timeout=180)
     if res.returncode or not target.exists():
         say("Could not create it: " + (res.stderr.strip() or res.stdout.strip()))
         return None
+    start_on_main(target)
     written = copy_template(target)
+    if text != original:
+        save_config(target / "config.yml", original, text)
     ensure_email(login, target)
     commit_and_push(target, "Start star-triage", written)
-    return target
+    return target, auth
+
+
+def confirm_existing(repo: str | None, login: dict | None) -> str:
+    """Before touching an existing data repo, show which repo and which GitHub account, and ask
+    (UT-5). Returns 'use', 'new' or 'stop'."""
+    who = login["login"] if login else None
+    owner = repo.split("/")[0] if repo else None
+    say(f"\nFound a star-triage data repo: {repo or '(no GitHub remote yet)'}")
+    say(f"  Folder: {ROOT}")
+    say(f"  GitHub CLI logged in as: {who or 'nobody (gh is not ready)'}")
+    if who and owner and who.lower() != owner.lower():
+        say(f"  Careful: this repo belongs to {owner}, but you're logged in as {who}.")
+        say(f"  Settings and secrets need {owner}'s login. To switch: gh auth switch, or gh auth login.")
+    if yes(f"Set up {repo or 'this repo'}" + (f" (logged in as {who})?" if who else "?"), default=False):
+        return "use"
+    if yes("Create a new data repo instead?", default=False):
+        return "new"
+    return "stop"
 
 
 def migrate(target: Path) -> None:
@@ -527,27 +760,44 @@ def migrate(target: Path) -> None:
     commit_and_push(target, "Move to the star-triage Action and plugin")
 
 
-def find_or_make_data_repo(login: dict | None) -> Path | None:
+def find_or_make_data_repo(login: dict | None) -> tuple[Path, str] | None:
+    """(folder, stage) of the data repo to set up. Stage is '' for an existing repo the user
+    confirmed, 'created' or 'approved' for one made just now."""
+    if STAGE:
+        return ROOT, STAGE
     if is_data_repo(ROOT):
-        return ROOT
-    cwd = Path.cwd()
-    if cwd.resolve() == ENGINE_DIR:
-        say("This folder is the star-triage engine, not a data repo, so setup will not use it.")
-    elif (cwd / ".git").exists() and doctor.detect_repo():
-        # Only an empty repo is offered: one with commits and files is somebody's project.
-        empty = git_in(cwd, "rev-parse", "--verify", "-q", "HEAD").returncode != 0 \
-            or not git_in(cwd, "ls-files").stdout.strip()
-        if not empty:
-            say(f"This folder ({cwd}) is a git repo that already has files, so setup will not use it")
-            say("as your data repo. To use an existing empty repo, run setup from inside that one.")
-        elif yes(f"Set up this folder ({cwd}) as your star-triage data repo?", default=False):
-            written = copy_template(cwd)
-            ensure_email(login, cwd)
-            commit_and_push(cwd, "Start star-triage", written)
-            return cwd
-    say("You don't have a star-triage data repo yet. It's a small private GitHub repo that holds")
-    say("your settings and notes; the workflow in it calls the star-triage Action.")
-    return create_data_repo(login)
+        choice = confirm_existing(doctor.detect_repo(), login)
+        if choice == "use":
+            return ROOT, ""
+        if choice == "stop":
+            say("Nothing was changed.")
+            return None
+    else:
+        cwd = Path.cwd()
+        if cwd.resolve() == ENGINE_DIR:
+            say("This folder is the star-triage engine, not a data repo, so setup will not use it.")
+        elif (cwd / ".git").exists() and doctor.detect_repo():
+            # Only an empty repo is offered: one with commits and files is somebody's project.
+            empty = git_in(cwd, "rev-parse", "--verify", "-q", "HEAD").returncode != 0 \
+                or not git_in(cwd, "ls-files").stdout.strip()
+            if not empty:
+                say(f"This folder ({cwd}) is a git repo that already has files, so setup will not use it")
+                say("as your data repo. To use an existing empty repo, run setup from inside that one.")
+            elif yes(f"Set up this folder ({cwd}) as your star-triage data repo?", default=False):
+                start_on_main(cwd)
+                written = copy_template(cwd)
+                ensure_email(login, cwd)
+                commit_and_push(cwd, "Start star-triage", written)
+                return cwd, "created"
+        say("You don't have a star-triage data repo yet. It's a small private GitHub repo that holds")
+        say("your settings and notes; the workflow in it calls the star-triage Action.")
+    made = create_data_repo(login)
+    if not made:
+        return None
+    target, auth = made
+    if auth:
+        os.environ["STAR_TRIAGE_SETUP_AUTH"] = auth
+    return target, "created" if STEP_BY_STEP else "approved"
 
 
 def manual_steps(repo: str | None) -> None:
@@ -557,8 +807,47 @@ def manual_steps(repo: str | None) -> None:
     say(f"  a) https://github.com/{r}/settings/actions  > Workflow permissions >")
     say("     tick 'Allow GitHub Actions to create and approve pull requests' > Save")
     say("  b) Run `claude setup-token`, copy the token, add it as CLAUDE_CODE_OAUTH_TOKEN at")
-    say(f"     https://github.com/{r}/settings/secrets/actions/new")
+    say(f"     https://github.com/{r}/settings/secrets/actions/new  (don't share the screen it's shown on)")
     say(f"  c) https://github.com/{r}/actions > star-triage > Run workflow")
+
+
+def existing_plan(repo: str, use_gh: bool, config_changed: bool, launcher_old: bool,
+                  secret: set[str] | None, never_ran: bool, auth: str | None) -> list[str]:
+    lines = []
+    if launcher_old:
+        lines.append("update star-triage.py in your data repo (the plugin has newer commands)")
+    lines.append("commit and push config.yml" if config_changed
+                 else "commit and push any starting file or commit GitHub doesn't have yet")
+    if not use_gh:
+        lines.append("show the GitHub steps to do by hand (the GitHub CLI is not ready)")
+        return lines
+    lines.append(f"check {repo}'s GitHub settings (Actions on, workflow may open pull requests) and fix "
+                 "what is off")
+    if secret:
+        lines.append(f"keep the Claude credentials already stored ({', '.join(sorted(secret))})")
+    else:
+        lines.append("store your " + ("Anthropic API key" if auth == "apikey" else "Claude token")
+                     + " as a repo secret (you paste it at a hidden prompt)")
+    if never_ran:
+        lines.append("wait until GitHub Actions has registered the workflow, then start the first run (3 repos)")
+    return lines
+
+
+def repair(repo: str) -> None:
+    """--repair: make GitHub Actions register the workflow (UT-9)."""
+    if workflow_registered(repo):
+        say("GitHub Actions already has the star-triage workflow. Nothing to repair.")
+        say(actions_hint(repo).split(" If ")[0])
+        return
+    say(f"GitHub Actions hasn't registered {WORKFLOW_PATH}. Setup will push a one-character change to")
+    say("it (a trailing blank line), which makes GitHub look at the workflow again.")
+    if not yes("Go ahead?"):
+        return
+    if nudge_workflow(ROOT) and wait_registered(repo):
+        say("Fixed: GitHub Actions has the star-triage workflow. " + actions_hint(repo).split(" If ")[0])
+    else:
+        say("Still not registered. Check that the file is on the default branch on GitHub, and see "
+            f"'Workflow not found' in {TROUBLESHOOTING_URL}")
 
 
 # ----------------------------------------------------------------- main
@@ -572,60 +861,94 @@ def main() -> None:
         sys.exit("Setup asks questions, so it needs a terminal you can type in. Open a terminal window "
                  "and run it there yourself (to only check, add --check).")
 
-    say("star-triage setup. It asks before changing anything, and is safe to run again.")
+    if not STAGE:
+        say("star-triage setup. A few questions, then one plan to approve. Safe to run again.")
+        if STEP_BY_STEP:
+            say("Step by step: you are asked before each step.")
 
-    step(1, "Checking your computer")
-    if sys.version_info < (3, 9):
-        sys.exit("Python 3.9 or newer is needed.")
-    if importlib.util.find_spec("yaml") is None:
-        if yes("PyYAML (a small library the scripts need) is missing. Install it now?"):
-            subprocess.call([sys.executable, "-m", "pip", "install", "--user", "pyyaml"])
-            importlib.invalidate_caches()
+        step(1, "Checking your computer")
+        if sys.version_info < (3, 9):
+            sys.exit("Python 3.9 or newer is needed.")
         if importlib.util.find_spec("yaml") is None:
-            sys.exit("PyYAML is still missing. Install it with:\n  " + doctor.pyyaml_hint() + "\nthen run this again.")
+            if yes("PyYAML (a small library the scripts need) is missing. Install it now?"):
+                subprocess.call([sys.executable, "-m", "pip", "install", "--user", "pyyaml"])
+                importlib.invalidate_caches()
+            if importlib.util.find_spec("yaml") is None:
+                sys.exit("PyYAML is still missing. Install it with:\n  " + doctor.pyyaml_hint() + "\nthen run this again.")
     use_gh = gh_ready()
     login = gh_json("api", "user") if use_gh else None
-    say(f"GitHub CLI: {'logged in as ' + login['login'] if login else 'not available'}")
+    if not STAGE:
+        say(f"GitHub CLI: {'logged in as ' + login['login'] if login else 'not available'}")
 
-    data = find_or_make_data_repo(login)
-    if not data:
+    found = find_or_make_data_repo(login)
+    if not found:
         sys.exit(1)
+    data, stage = found
     write_link(data=data, engine=ENGINE_DIR if running_as_plugin() else None)
-    if data != ROOT:
-        # Every module found the data repo at import time; start again pointed at the new one.
-        env = dict(os.environ, STAR_TRIAGE_DATA=str(data))
+    if data != ROOT or stage != STAGE:
+        # Every module found the data repo at import time; start again pointed at this one.
+        env = dict(os.environ, STAR_TRIAGE_DATA=str(data), STAR_TRIAGE_SETUP_STAGE=stage)
         sys.exit(subprocess.call([sys.executable, __file__, *sys.argv[1:]], cwd=data, env=env))
+    approved = STAGE == "approved"
     if "--migrate" in args:
         say("\n== Upgrading from v4 " + "=" * 47)
         migrate(ROOT)
     repo = doctor.detect_repo()
     if not repo:
         sys.exit("Your data repo has no GitHub remote. Push it to GitHub first (git remote add origin ...).")
-    say(f"Data repo: {ROOT}  ({repo})")
+    say(f"\nData repo: {ROOT}  ({repo})")
+    if "--repair" in args:
+        if use_gh:
+            repair(repo)
+        else:
+            say("--repair needs the GitHub CLI: install it and run gh auth login.")
+        return
 
+    # ---- questions (nothing changes yet)
     launcher, shipped = ROOT / "star-triage.py", TEMPLATE_DIR / "star-triage.py"
-    if launcher.exists() and launcher.read_bytes().replace(b"\r\n", b"\n") != shipped.read_bytes().replace(b"\r\n", b"\n"):
-        if yes("star-triage.py in your data repo is older than the plugin (it lacks the newer commands). Update it?"):
-            launcher.write_bytes(shipped.read_bytes())
+    launcher_old = launcher.exists() and \
+        launcher.read_bytes().replace(b"\r\n", b"\n") != shipped.read_bytes().replace(b"\r\n", b"\n")
+    original, cfg = read_config(CONFIG_PATH)
+    text = original
+    if not approved and "--skip-config" not in args:
+        step(2, "Your settings (config.yml)")
+        text = ask_config(original, cfg, login["login"] if login else None, repo.split("/")[0],
+                          existing=not STAGE)
+        if STEP_BY_STEP:
+            save_config(CONFIG_PATH, original, text)
+            original = text = CONFIG_PATH.read_text(encoding="utf-8")
+    auth = os.environ.get("STAR_TRIAGE_SETUP_AUTH") or None
+    secret = secret_names(repo) if use_gh else None
+    never_ran = use_gh and gh_json("run", "list", "--repo", repo, "--workflow", WORKFLOW_FILE,
+                                   "--limit", "1", "--json", "url") in ([], None)
+    if use_gh and not secret and not auth and not STEP_BY_STEP:
+        auth = ask_auth()
+    if not approved and not STEP_BY_STEP:
+        if not show_plan(existing_plan(repo, use_gh, text != original, launcher_old, secret, never_ran, auth)):
+            say("Nothing was changed.")
+            return
 
-    step(2, "Your settings (config.yml)")
-    if "--skip-config" in args:
-        say("Skipped (--skip-config).")
-    else:
-        configure(login["login"] if login else None, repo.split("/")[0])
-
-    step(3, "Commit email and pushing your settings")
+    # ---- apply
+    step(3, "Saving and pushing your settings")
+    if launcher_old and confirm("star-triage.py in your data repo is older than the plugin. Update it?"):
+        launcher.write_bytes(shipped.read_bytes())
+    if text != original:
+        save_config(CONFIG_PATH, original, text)
     ensure_email(login)
     commit_settings()
 
     step(4, "GitHub settings")
     if use_gh:
+        check_default_branch(repo, ROOT)
         enable_actions(repo)
         allow_pull_requests(repo)
         step(5, "Claude token (stored as a GitHub secret)")
-        set_secret(repo)
+        set_secret(repo, auth)
         step(6, "First run")
-        first_run(repo)
+        if never_ran or STEP_BY_STEP:
+            first_run(repo)
+        else:
+            say("The workflow has run before, so no first run is started. " + actions_hint(repo).split(" If ")[0])
     else:
         manual_steps(repo)
 

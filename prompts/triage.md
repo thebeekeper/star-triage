@@ -2,14 +2,15 @@
 
 You are reviewing GitHub repositories that the owner of this repo recently starred.
 For each one, decide what it really is, whether it lives up to its claims, how risky
-it is to install, and whether it matters for the owner's own work. Then write one
-Markdown note per repo. Be blunt and specific; your job is to separate useful tools
+it is to install, and when someone would actually use it. Then write one Markdown note
+per repo. Be blunt and specific; your job is to separate useful tools
 from hype.
 
 ## Inputs
 
-- `config.yml`: who the owner is (`about_me`), their projects (`contexts`), and the
-  ONLY label values you may use (`labels`).
+- `config.yml`: the owner's projects (`contexts`, optional; used for `relevant_to`), the
+  ONLY label values you may use (`labels`), and maybe an `about_me`. `about_me` is optional
+  and usually empty: when it has text, use it as extra context, never as a requirement.
 - `.triage/new.json`: the repos to review this run. Each entry has `repo`, `url`,
   `description`, `language`, `topics`, `license`, `stars`, `archived`, `pushed_at`,
   `starred_at`, `lists` (the owner's star lists that contain it, a hint for category),
@@ -55,21 +56,23 @@ from hype.
    `risk` may be higher than the scan's `risk_floor` but never lower: if you rate it lower,
    the pipeline raises it automatically. Do not write a scan section yourself; an
    "## Security scan (automated)" section is added to your note after you finish.
-5. **Choose the verdict for this owner.** Use `about_me` and `contexts`: the question is
-   "should *this person* install it now?", not "is it good in general?".
-   - `Install`: it clearly helps something they do now (one of their contexts or their
-     stated goals), it works as described, it is maintained, and its risks are ones you
-     would accept on your own machine. A well-known tool that fits their daily work (for
-     example a docs MCP server for someone who codes with Claude every day) is an Install
-     even if its headline claims are unmeasured: judge the tool, not the marketing.
-   - `Try`: promising for them, but the benefit is uncertain, it needs setup or a test
-     drive first, or it overlaps with something they already use.
-   - `When needed`: useful for a specific task they don't have yet; keep for later.
-   - `Optional`: fine, but adds little for them.
+5. **Choose the verdict on general quality and safety.** The question is "is this a
+   solid, safe tool that most people who use Claude Code would be glad to have?". The owner
+   decides what fits their own work by reading "When you'd use it" (step 8). If `about_me`
+   or `contexts` say something specific, you may take it into account; never downgrade a
+   repo only because they are empty.
+   - `Install`: it does what it says, it is maintained, it is useful to most Claude Code
+     users, and its risks are ones you would accept on your own machine. A well-known tool
+     (for example a docs MCP server) is an Install even if its headline claims are
+     unmeasured: judge the tool, not the marketing.
+   - `Try`: promising, but the benefit is uncertain, it needs setup or a test drive first,
+     or it overlaps with common tools.
+   - `When needed`: useful for one specific kind of task, not every day; keep for later.
+   - `Optional`: fine, but adds little.
    - `Portfolio only`: a library or design resource for building projects, not a tool to
      install into Claude Code.
    - `Not now`: not ready (too young, unstable or risky for now); worth checking later.
-   - `Skip`: not worth their time, or the risks outweigh the benefit.
+   - `Skip`: not worth the time, or the risks outweigh the benefit.
    An `Install` is queued for installation on the owner's computer, but safely: the owner
    approves it (by merging, or automatically if they chose that for Low risk), the security
    scan can block it, and it can be removed with one click. So don't downgrade a clear fit
@@ -100,9 +103,13 @@ from hype.
    Use the package name exactly as the README installs it. Never invent one: if you are
    not sure which package belongs to this repo, use `{"kind": "none", "why": "package unclear"}`.
    The pipeline rejects packages whose registry entry does not link back to this repo.
-7. **Judge relevance** against `about_me` and `contexts`. If nothing fits, use the
-   context named "General" if it exists.
-8. **Write the note** to `note_path` in exactly this format:
+7. **Pick `relevant_to`** from the context names. If none of the owner's projects fits
+   (or there is only "General"), use "General".
+8. **Write 2 or 3 concrete examples of when you'd use it.** Each is one bullet: a real
+   situation and what the tool does there, e.g. "- You're about to call an unfamiliar
+   library API: it fetches the current docs so Claude doesn't guess." No generic lines like
+   "when you want to be more productive".
+9. **Write the note** to `note_path` in exactly this format:
 
 ```markdown
 ---
@@ -130,6 +137,12 @@ tags: [star-triage]
 ## What it is
 
 <2-4 short sentences.>
+
+## When you'd use it
+
+- <concrete situation 1: what you're doing, and what this does for you>
+- <concrete situation 2>
+- <optional situation 3>
 
 ## Verdict: <verdict>
 

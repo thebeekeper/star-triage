@@ -28,13 +28,15 @@ Every command below is `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<script>" <argume
 
 Rules:
 
-1. Run exactly one of these commands for what the user asked. Do not edit `config.yml`, notes or
+1. Say "star-triage mode" in replies, so it isn't confused with Claude Code's own auto mode
+   (a permission mode). If "auto mode" could mean Claude Code's setting, ask which they mean.
+2. Run exactly one of these commands for what the user asked. Do not edit `config.yml`, notes or
    `installs.json` yourself, and do not add other flags.
-2. If the user's words don't say which mode ("change the mode"), run `mode.py`, show the three
+3. If the user's words don't say which mode ("change the mode"), run `mode.py`, show the three
    choices in the words above, and ask which one. Never pick `auto-plus` unless they asked for
    medium-risk installs.
-3. `mode.py <mode>` commits `config.yml` as "Switch star-triage to <mode>" and pushes it. If the
+4. `mode.py <mode>` commits `config.yml` as "Switch star-triage to <mode>" and pushes it. If the
    push fails it prints the exact commands to run; pass them on word for word.
-4. Confirm in one sentence, using the last line the command printed.
-5. "Stop installing things" is ambiguous. If they mean for good, use `mode.py manual`. If they
+5. Confirm in one sentence, using the last line the command printed.
+6. "Stop installing things" is ambiguous. If they mean for good, use `mode.py manual`. If they
    mean for now, use `sync.py --pause`. Ask if it is not clear.

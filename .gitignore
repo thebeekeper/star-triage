@@ -18,3 +18,5 @@ __pycache__/
 docs/PRIVATE-NOTES.md
 # security audit with open findings; keep private until they are fixed
 docs/AUDIT-*.md
+# new-user test notes; keep private until fixed
+docs/USER-TEST-*.md

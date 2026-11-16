@@ -21,19 +21,15 @@ model: sonnet
 marketplace_name: my-stars
 install_scope: user
 
-# Auto modes only. An item installs by itself once its review is this many hours old (time
+# star-triage auto and auto-plus modes only. An item installs by itself once its review is this many hours old (time
 # to untick it or pause), and at most this many items install per day on one computer.
 auto_wait_hours: 6
 auto_daily_limit: 5
 
-# A few lines about you: what you build, your languages, what you want from repos.
-# Claude uses this to judge what is relevant and what is hype. Setup fills it in. Example:
-#   about_me: >
-#     Backend developer, mostly Python. I want fewer tokens and less hype.
-about_me: ""
-
-# Your projects and interests. Each name becomes a "relevant_to" label on notes.
-# Add your own above General, each with a name and a one-line description.
+# Optional: your projects. Each name becomes a "relevant_to" label on notes. Add your own
+# above General, each with a name and a one-line description, or leave just General.
+# Reviews judge every repo on general quality and safety, and each note lists 2 or 3
+# examples of when you'd use it. (An older `about_me:` key still works as extra context.)
 contexts:
   - name: General
     description: Useful to know about, no specific project

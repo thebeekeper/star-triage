@@ -89,4 +89,8 @@ cleanup
 "$PY" "$ENGINE/tests/test_ci_resilience.py" || fail=1
 # Offline auto mode checks: the mode mapping, the safety delay, the daily limit, pause, undo, history.
 "$PY" "$ENGINE/tests/test_auto_mode.py" || fail=1
+# Offline setup and doctor checks from the new-user test (fake gh, local "origin").
+"$PY" "$ENGINE/tests/test_setup.py" || fail=1
+# The seal and .git/config restore steps of action.yml, run as written.
+"$PY" "$ENGINE/tests/test_action_steps.py" || fail=1
 exit $fail

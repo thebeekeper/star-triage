@@ -89,6 +89,65 @@ Setup then runs `gh secret set`, which shows `? Paste your secret`: paste there 
 Nothing appears while you paste; that is normal. Clear the terminal afterwards
 (`cls` on Windows, `clear` elsewhere).
 
+### `/star-triage:setup` says "Not set up yet"
+
+That is the normal state before setup has run, not an error. Run the one command it prints, in
+a terminal (not inside Claude Code): type `/exit`, or open another terminal window. Before
+5.4.0 this showed as a red "Exit code 1" and "[FAIL] No star-triage data repo found".
+
+### The setup command has a long path with a version number in it
+
+Older versions gave a path like `.../plugins/cache/star-triage/star-triage/5.2.0/scripts/setup.py`,
+which breaks after the next plugin update. Since 5.4.0 the plugin keeps a launcher at
+`~/.claude/star-triage.py`, so this works from any folder, after any update:
+
+```
+python3 "$HOME/.claude/star-triage.py" setup
+```
+
+`"$HOME/..."` works in PowerShell, bash and zsh. In the old Windows Command Prompt (cmd), use
+`python "%USERPROFILE%\.claude\star-triage.py" setup`. If the file isn't there yet, run
+`/star-triage:setup` once (it writes it), or start Claude Code once.
+
+### Setup asks "Set up <owner>/<repo> (logged in as <you>)?"
+
+Setup found a data repo you set up before (in this folder, or the one it linked last time) and
+wants to be sure before changing it. Answer `y` if that is the repo and the GitHub account you
+mean. Answer `n` to be offered a new data repo instead. If the account is wrong, stop
+(Ctrl+C), switch with `gh auth switch` (or `gh auth login`), and run setup again in the
+terminal logged in to the right account (`gh auth status` shows which).
+
+If setup says a change to `github_user` would make the repo read someone else's stars, answer
+`n` unless that is what you want.
+
+### I want setup to ask before each step
+
+Run it with `--step-by-step`. Without it, setup asks its questions first, shows one plan, and
+after "Go ahead?" runs straight through (only the token paste and "clear the screen?" come
+after).
+
+### Claude token was shared
+
+`claude setup-token` prints the token on screen, so it ends up in screenshots and pasted
+transcripts. Anyone with it can use your Claude subscription. Make a new one and replace the
+secret:
+
+```
+claude setup-token
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <you>/<your-repo>
+```
+
+(paste the new token at the hidden prompt). Then remove the old one: if your Claude account
+settings list active tokens or sessions, revoke it there. Clear the terminal afterwards
+(`cls` on Windows, `clear` elsewhere). Setup offers to do that for you.
+
+### My data repo's branch is `master`, not `main`
+
+Nothing breaks: the workflow runs on your repo's default branch, whatever its name. Setup
+5.4.0 and later starts new repos on `main`. To rename an old one: on GitHub, *Settings >
+General > Default branch*, rename it to `main`; then in your data repo run
+`git branch -m master main`, `git fetch origin`, `git branch -u origin/main main`.
+
 ## Installing Claude Code (needed once, for the token)
 
 ### `claude : The term 'claude' is not recognized` (Windows)
@@ -183,6 +242,34 @@ workflows after 60 days without activity in the repo.
 again (step 3 pushes it). If it says the workflow is disabled, run
 `gh workflow enable star-triage.yml`, or click the enable button on the **Actions** tab.
 
+### `workflow star-triage.yml not found on the default branch` (HTTP 404), or "GitHub Actions hasn't registered the workflow"
+
+**Cause:** GitHub sometimes misses the workflow file in a brand-new repo's very first push
+(the repo is seconds old). The file is there and valid, but **Actions** says "No workflows
+found", and later pushes that don't touch the workflow file never make GitHub look again.
+
+**Fix:** setup 5.4.0 and later handles this itself: it waits up to a minute, then pushes a
+one-character change to the workflow file and waits again. If you still see it, run
+`python3 star-triage.py setup --repair` in your data repo (same fix), or edit
+`.github/workflows/star-triage.yml` on GitHub (any small change) and commit. Then open
+**Actions > star-triage > Run workflow**. After clicking, GitHub shows "Workflow run was
+successfully requested" while the list still says no runs: refresh after a few seconds.
+
+### Warnings: `Node.js 20 is deprecated` or `ubuntu-latest label will migrate to Ubuntu 26`
+
+Both are GitHub notices, not errors. 5.4.0 moved the pinned actions (checkout, setup-python)
+to their Node 24 releases, so the Node.js warning goes away with it. The Ubuntu notice is
+about GitHub's runner image; star-triage needs only bash, git, Python and curl, which every
+Ubuntu image has. To pin the image anyway, change `runs-on: ubuntu-latest` to
+`runs-on: ubuntu-24.04` in your repo's `.github/workflows/star-triage.yml`.
+
+### `Restoring .git/config. Settings changed during the Claude step`
+
+Expected on every run. claude-code-action sets a git user and an origin URL with its token
+before Claude starts; star-triage puts the clean `.git/config` back right after. The log lists
+the setting names (`added: user.name user.email`, `value changed: remote.origin.url`), never
+their values.
+
 ### The Actions tab says "There are no workflow runs yet"
 
 **Cause:** nothing is wrong. The workflow only runs on its schedule or when you start it,
@@ -240,6 +327,14 @@ star. Hand-written notes with a guessed URL cause the same thing.
 **Fix:** keep the newer note, delete the older one, and make sure each note's `repo:` is the
 exact URL GitHub shows today.
 
+### Old notes have no "When you'd use it" section
+
+Notes reviewed before 5.4.0 don't have it; new reviews always do (the run rejects a new note
+without 2 or 3 examples). To add it to an old note, review it again: **Actions > star-triage >
+Run workflow**, with `owner/name` in "Review these again". Setup no longer asks about you, and
+the "about_me is empty" warning is gone; an `about_me` you already wrote still counts as extra
+context.
+
 ### A note was rejected (`Note rejected` warning on the run page)
 
 **Cause:** the note Claude wrote for that repo failed the checks (broken YAML, a missing
@@ -253,8 +348,10 @@ hand. The run only fails when no note at all passed.
 
 ### `Integrity check failed`
 
-**Cause:** the trusted scan copy or `.git/config` changed while Claude was reviewing. The run
-stops before anything is published. A reviewed repo may have talked the reviewer into it.
+**Cause:** the trusted scan copy changed while Claude was reviewing. The run stops before
+anything is published. A reviewed repo may have talked the reviewer into it. (Before 5.2.1 this
+also fired on every run because claude-code-action rewrites `.git/config`; update if you see it
+on an old version.)
 
 **Fix:** run the workflow again. If it repeats, review fewer repos per run (`max`) to find the
 one that triggers it, and unstar or skip it.
@@ -319,6 +416,27 @@ claude plugin update star-triage@star-triage
 ```
 
 Then restart Claude Code. The doctor says when a newer version is out.
+
+### `star-triage on this computer is X, your reviews use Y`
+
+The Action on GitHub (`@v1`) updates itself; the plugin on your computer stays on its version
+until you update it. When they differ, the two can disagree about what's approved. Update, in
+a terminal:
+
+```
+claude plugin marketplace update star-triage
+claude plugin update star-triage@star-triage
+```
+
+Then restart Claude Code.
+
+### The start message says `X installs after 11:52 (6 h safety delay)`
+
+That's your star-triage mode (auto or auto-plus) at work, not Claude Code's own auto mode. The
+item was reviewed less than `auto_wait_hours` ago (default 6); it installs the first time
+Claude Code starts after that time (your computer's local time). To stop it, untick `approve`
+on its note, or run `python3 star-triage.py pause`. "wait for tomorrow (daily limit N)" means
+`auto_daily_limit` was reached today.
 
 ### `Unable to resolve action thebeekeper/star-triage@v1`
 

@@ -38,7 +38,7 @@ import urllib.request
 from pathlib import Path
 
 from common import ROOT, TRUSTED_DIR, WORK_DIR, github_user, load_config, normalize_url, split_note, write_note
-from paths import MODE_RISKS, read_mode
+from paths import ENGINE_DIR, MODE_RISKS, read_mode
 
 INSTALLS_PATH = ROOT / "installs.json"
 MARKET_PATH = ROOT / ".claude-plugin" / "marketplace.json"
@@ -340,6 +340,12 @@ def main() -> None:
     installs.setdefault("about", "Installs reviewed by star-triage. Written by the workflow; "
                                  "approve or stop items with the approve checkbox on each note.")
     items = installs.setdefault("items", {})
+    # Which engine wrote this file. The plugin on your computer compares it with its own
+    # version and says when it needs an update (the Action updates itself; the plugin doesn't).
+    try:
+        installs["engine_version"] = (ENGINE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
     market = load_json_file(MARKET_PATH, None) or {
         "name": cfg.get("marketplace_name") or "my-stars",
         "owner": {"name": github_user(cfg)},

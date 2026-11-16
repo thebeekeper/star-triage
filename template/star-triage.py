@@ -11,8 +11,12 @@
     doctor    check your setup and say how to fix anything wrong
     setup     guided setup (safe to run again)
 
-The star-triage code lives in its Claude Code plugin, so it updates by itself; this file only
-finds it. Install the plugin once, in Claude Code:
+The star-triage code lives in its Claude Code plugin; this file only finds it. The plugin also
+keeps a copy of this file at ~/.claude/star-triage.py, so this works from any folder:
+
+    python "$HOME/.claude/star-triage.py" setup
+
+Install the plugin once, in Claude Code:
 
     /plugin marketplace add thebeekeper/star-triage
     /plugin install star-triage@star-triage
@@ -74,8 +78,12 @@ def main() -> int:
               "  claude plugin marketplace update star-triage\n"
               "  claude plugin update star-triage@star-triage")
         return 1
-    env = dict(os.environ, STAR_TRIAGE_DATA=str(HERE))
-    return subprocess.call([sys.executable, str(script), *front, *sys.argv[2:]], cwd=HERE, env=env)
+    env, cwd = dict(os.environ), Path.cwd()
+    if (HERE / "config.yml").is_file() and (HERE / "tracker").is_dir():
+        # This copy is in a data repo: always use that repo. (The copy in ~/.claude is not,
+        # so there the scripts look in the current folder, then the repo setup linked.)
+        env["STAR_TRIAGE_DATA"], cwd = str(HERE), HERE
+    return subprocess.call([sys.executable, str(script), *front, *sys.argv[2:]], cwd=cwd, env=env)
 
 
 if __name__ == "__main__":

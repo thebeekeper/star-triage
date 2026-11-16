@@ -6,6 +6,7 @@ Run: python tests/test_ci_resilience.py
         a repo the scanner cannot read gets a High floor and a "scan failed" blocker.
   CI-4  one bad note plus one good note: the bad one is moved to .triage/rejected/, the
         good one survives. Only bad notes: the run fails.
+  UT-6  a note needs "## When you'd use it" with 2 or 3 examples; --all only notes old ones.
 """
 import json
 import os
@@ -22,7 +23,7 @@ failed = False
 GOOD = ('---\ntype: "Skill"\ncategory: ["Workflow"]\nstatus: "Inbox"\nverdict: "Skip"\nrisk: "Low"\n'
         'saves_tokens: "No"\nrelevant_to: ["General"]\nrepo: "https://github.com/o/good"\nsummary: "x"\n'
         'install: "none"\nlicence: "MIT"\nsource: "GitHub star"\nadded: 2026-01-01\nreviewed: 2026-01-01\n'
-        '---\n\n# good\n\n## What it is\n\nx\n\n## Verdict\n\nx\n')
+        '---\n\n# good\n\n## What it is\n\nx\n\n## When you\'d use it\n\n- a\n- b\n\n## Verdict\n\nx\n')
 BAD = '---\nrepo: "https://github.com/o/bad\nverdict: [unclosed\n---\n\n# bad\n'
 
 
@@ -107,6 +108,21 @@ def note_cases(tmp: Path) -> None:
 
     res = note_case(tmp / "allbad", {"bad": BAD})
     check("CI-4 only bad notes: the run fails", res.returncode != 0, res.stdout[-300:])
+
+    one = GOOD.replace("- a\n- b\n", "- a\n").replace("o/good", "o/one")
+    none = GOOD.replace("## When you'd use it\n\n- a\n- b\n\n", "").replace("o/good", "o/none")
+    root = tmp / "use"
+    res = note_case(root, {"good": GOOD, "one": one, "none": none})
+    check("UT-6 a note with 2 'When you'd use it' examples passes",
+          (root / "tracker" / "o__good.md").exists(), res.stdout[-300:])
+    check("UT-6 one example, or no section, is rejected",
+          not (root / "tracker" / "o__one.md").exists() and not (root / "tracker" / "o__none.md").exists()
+          and "needs 2 or 3 examples" in res.stdout and "missing section '## When you'd use it'" in res.stdout,
+          res.stdout[-400:])
+    (root / "tracker" / "o__old.md").write_text(none.replace("o/none", "o/old"), encoding="utf-8")
+    res = run("validate_notes.py", "--all", root=root)
+    check("UT-6 --all accepts notes from before 5.4 and says how many lack the section",
+          res.returncode == 0 and "1 note(s) from before 5.4" in res.stdout, (res.stdout + res.stderr)[-300:])
 
 
 def main() -> None:

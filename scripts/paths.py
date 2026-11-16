@@ -157,6 +157,41 @@ def find_data_root() -> Path | None:
     return linked_data_root()
 
 
+# ----------------------------------------------------------------- the stable launcher (UT-4)
+# The plugin's own path has its version in it (.../plugins/cache/star-triage/star-triage/5.4.0/),
+# so a command copied from it breaks after an update. A copy of the data repo's launcher is
+# kept at ~/.claude/star-triage.py; it finds whichever plugin version is installed.
+LAUNCHER = CLAUDE_DIR / "star-triage.py"
+
+
+def python_name() -> str:
+    return "python" if os.name == "nt" else "python3"
+
+
+def launcher_command(command: str = "setup") -> str:
+    """A short command that runs star-triage from any folder and survives plugin updates.
+    "$HOME" works in PowerShell, bash and zsh."""
+    try:
+        default = CLAUDE_DIR.resolve() == (Path.home() / ".claude").resolve()
+    except OSError:
+        default = False
+    where = '"$HOME/.claude/star-triage.py"' if default else f'"{LAUNCHER.as_posix()}"'
+    return f"{python_name()} {where} {command}"
+
+
+def install_launcher() -> bool:
+    """Write ~/.claude/star-triage.py if it is missing or differs from this version's."""
+    try:
+        new = (ENGINE_DIR / "template" / "star-triage.py").read_bytes()
+        if LAUNCHER.is_file() and LAUNCHER.read_bytes() == new:
+            return False
+        LAUNCHER.parent.mkdir(parents=True, exist_ok=True)
+        LAUNCHER.write_bytes(new)
+        return True
+    except OSError:
+        return False
+
+
 def running_as_plugin() -> bool:
     """True when this code is the installed Claude Code plugin (its hook is then built in)."""
     parts = [p.lower() for p in ENGINE_DIR.parts]
@@ -165,3 +200,15 @@ def running_as_plugin() -> bool:
     # A plugin installed from a local folder runs in place; its hook records where it is.
     recorded = read_link().get("engine")
     return bool(recorded) and Path(recorded).resolve() == ENGINE_DIR
+
+
+if __name__ == "__main__":
+    # `python paths.py launcher` (run by the /star-triage:setup skill): write the stable
+    # launcher and print the setup command to give the user.
+    import sys
+    if sys.argv[1:] != ["launcher"]:
+        sys.exit("usage: paths.py launcher")
+    install_launcher()
+    if CLAUDE_DIR.resolve() in ENGINE_DIR.parents or running_as_plugin():
+        write_link(engine=ENGINE_DIR)  # so the launcher finds this version before the first restart
+    print(launcher_command("setup"))

@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import (AUTO_MERGE_LOW_RISK, AUTO_MERGE_NEVER, DEFAULT_MAX_PER_RUN, ENGINE_DIR,  # noqa: E402
                    MODES, MODE_SHORT, REPO_URL, TROUBLESHOOTING_URL, daily_limit, find_data_root,
-                   read_mode, running_as_plugin, safe_console, wait_hours)
+                   launcher_command, read_mode, running_as_plugin, safe_console, wait_hours)
 
 ROOT = find_data_root() or Path.cwd()  # your data repo (see paths.py)
 CONFIG_PATH = ROOT / "config.yml"
@@ -35,7 +35,7 @@ TROUBLESHOOTING = TROUBLESHOOTING_URL
 
 @dataclass
 class Result:
-    status: str  # ok | warn | fail
+    status: str  # ok | warn | fail | todo (not set up yet: a next step, not an error)
     label: str
     fix: str = ""
 
@@ -44,6 +44,9 @@ class Result:
 
 def run(cmd: list[str], cwd: Path = ROOT, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a command and capture its output. Never raises for a missing program."""
+    fake = os.environ.get("STAR_TRIAGE_GH")  # tests: tests/fake_gh.py stands in for gh
+    if cmd[0] == "gh" and fake:
+        cmd = [sys.executable, fake, *cmd[1:]] if fake.endswith(".py") else [fake, *cmd[1:]]
     exe = shutil.which(cmd[0]) or cmd[0]
     try:
         return subprocess.run([exe, *cmd[1:]], cwd=cwd, capture_output=True, text=True,
@@ -71,8 +74,12 @@ def detect_repo() -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def gh_installed() -> bool:
+    return bool(os.environ.get("STAR_TRIAGE_GH")) or shutil.which("gh") is not None
+
+
 def gh_ready() -> bool:
-    return shutil.which("gh") is not None and run(["gh", "auth", "status"]).returncode == 0
+    return gh_installed() and run(["gh", "auth", "status"]).returncode == 0
 
 
 def gh_json(*args: str):
@@ -109,6 +116,40 @@ def version_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", text)[:3])
 
 
+UPDATE_COMMANDS = ("claude plugin marketplace update star-triage", "claude plugin update star-triage@star-triage")
+
+
+UPDATE_HOW = f"Update, in a terminal: {UPDATE_COMMANDS[0]}  then  {UPDATE_COMMANDS[1]}  then restart Claude Code."
+
+
+def engine_mismatch(data_root: Path = ROOT) -> str | None:
+    """'star-triage on this computer is X, your reviews use Y' when the plugin here is older than
+    the engine that last wrote installs.json (the Action updates itself; the plugin waits for
+    you, UT-16). None when they match or either is unknown."""
+    try:
+        mine = (ENGINE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        theirs = str(json.loads((data_root / "installs.json").read_text(encoding="utf-8")).get("engine_version") or "")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if theirs and version_tuple(theirs) > version_tuple(mine):
+        return f"star-triage on this computer is {mine}, your reviews use {theirs}"
+    return None
+
+
+def actions_hint(repo: str) -> str:
+    """What to do when the workflow can't be started from here. Never a raw HTTP error."""
+    return (f"Open https://github.com/{repo}/actions , click star-triage on the left, then Run workflow. "
+            "If star-triage isn't listed, run: python star-triage.py setup --repair")
+
+
+def workflow_registered(repo: str) -> bool | None:
+    """Has GitHub Actions registered .github/workflows/star-triage.yml? None if gh can't tell."""
+    data = gh_json("api", f"repos/{repo}/actions/workflows")
+    if not isinstance(data, dict):
+        return None
+    return any(str(w.get("path", "")).endswith(f"/{WORKFLOW_FILE}") for w in data.get("workflows") or [])
+
+
 def check_version() -> list[Result]:
     """Warn when a newer star-triage has been released. Silent when GitHub can't be reached."""
     import urllib.request
@@ -121,8 +162,7 @@ def check_version() -> list[Result]:
         return []
     if version_tuple(latest) > version_tuple(mine):
         return [Result("warn", f"star-triage {mine} is installed; {latest} is out",
-                       "Update the plugin, in a terminal: claude plugin marketplace update star-triage  then  "
-                       "claude plugin update star-triage@star-triage  then restart Claude Code.")]
+                       UPDATE_HOW)]
     return [Result("ok", f"star-triage {mine}")]
 
 
@@ -175,9 +215,6 @@ def check_config(path: Path = CONFIG_PATH) -> list[Result]:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(cfg.get("marketplace_name", "my-stars"))):
         bad("marketplace_name must be lowercase letters, numbers and dashes", "e.g. marketplace_name: my-stars")
 
-    if not str(cfg.get("about_me") or "").strip():
-        warn("about_me is empty", "Add a few lines about you. Claude uses it to judge what is relevant.")
-
     contexts = cfg.get("contexts")
     if not isinstance(contexts, list) or not contexts:
         bad("contexts needs at least one project", "Add e.g.\n  - name: General\n    description: Useful to know about")
@@ -218,7 +255,7 @@ def check_config(path: Path = CONFIG_PATH) -> list[Result]:
     if not any(r.status == "fail" for r in out):
         mode = read_mode(cfg)
         extra = f", after a {wait_hours(cfg)} h safety delay, at most {daily_limit(cfg)} a day" if mode != "manual" else ""
-        out.append(Result("ok", f"Mode: {mode} ({MODE_SHORT[mode]}{extra})"))
+        out.append(Result("ok", f"star-triage mode: {mode} ({MODE_SHORT[mode]}{extra})"))
     return out
 
 
@@ -244,11 +281,14 @@ def check_local() -> list[Result]:
         out.append(Result("fail", "git is not installed", "Install it from https://git-scm.com/downloads"))
         return out + check_config()
     if not (ROOT / "config.yml").exists():
-        out.append(Result("fail", "No star-triage data repo found (the repo with config.yml and tracker/)",
-                          f"Run setup: python \"{ENGINE_DIR / 'scripts' / 'setup.py'}\", "
-                          "or run this from inside your data repo."))
+        # A brand-new user: that's expected, not an error (UT-3).
+        out.append(Result("todo", "Not set up yet: no star-triage data repo on this computer",
+                          "Next step, in a terminal (not inside Claude Code):\n  " + launcher_command("setup")))
         return out
     out.append(Result("ok", f"Data repo: {ROOT}"))
+    mismatch = engine_mismatch()
+    if mismatch:
+        out.append(Result("warn", mismatch, UPDATE_HOW))
     repo = detect_repo()
     if not repo:
         out.append(Result("fail", "Your data repo is not linked to GitHub (no origin remote)",
@@ -267,7 +307,7 @@ def check_local() -> list[Result]:
         out.append(Result("warn", "Automatic installs are paused on this computer",
                           "Nothing installs or is removed by itself until you run: python star-triage.py resume"))
 
-    if shutil.which("gh") is None:
+    if not gh_installed():
         out.append(Result("warn", "GitHub CLI (gh) is not installed, so GitHub settings were not checked",
                           "Install it from https://cli.github.com , then run: gh auth login"))
     elif not gh_ready():
@@ -348,11 +388,19 @@ def check_github(repo: str, email: str) -> list[Result]:
     if info is None:
         return [Result("fail", f"Cannot read {repo} on GitHub", "Check the repo exists and gh is logged in as its owner.")]
 
-    # The workflow has to be on GitHub, not only in this folder, and switched on.
+    # The workflow has to be on GitHub, not only in this folder, registered by Actions and
+    # switched on. GitHub sometimes misses the workflow in a new repo's first push (UT-9).
     workflow = gh_json("api", f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}")
     if workflow is None:
-        out.append(Result("fail", f"The workflow (.github/workflows/{WORKFLOW_FILE}) is not on GitHub yet",
-                          "Run python star-triage.py setup: step 3 commits and pushes it."))
+        pushed = gh_json("api", f"repos/{repo}/contents/.github/workflows/{WORKFLOW_FILE}")
+        if pushed is not None and workflow_registered(repo) is False:
+            out.append(Result("fail", "The workflow is on GitHub, but GitHub Actions hasn't registered it",
+                              "Run: python star-triage.py setup --repair  (it pushes a small change to the "
+                              f"workflow file, which makes GitHub look again), then start it at "
+                              f"https://github.com/{repo}/actions > star-triage > Run workflow."))
+        else:
+            out.append(Result("fail", f"The workflow (.github/workflows/{WORKFLOW_FILE}) is not on GitHub yet",
+                              "Run python star-triage.py setup: it commits and pushes it."))
     elif str(workflow.get("state", "")).startswith("disabled"):
         out.append(Result("fail", "The star-triage workflow is disabled on GitHub",
                           f"Turn it on: gh workflow enable {WORKFLOW_FILE} --repo {repo}"))
@@ -397,7 +445,8 @@ def check_github(repo: str, email: str) -> list[Result]:
         pass  # reported above
     elif runs == []:
         out.append(Result("warn", "The workflow has never run",
-                          f"Start it: gh workflow run {WORKFLOW_FILE} --repo {repo} -f max=3"))
+                          f"Start it: gh workflow run {WORKFLOW_FILE} --repo {repo} -f max=3\n"
+                          + actions_hint(repo)))
     elif runs:
         last = runs[0]
         if last.get("status") != "completed":
@@ -432,14 +481,16 @@ def report(results: list[Result], ci: bool = False) -> int:
                 f.write("\n")
         return 1 if fails else 0
 
-    marks = {"ok": "[ ok ]", "warn": "[warn]", "fail": "[FAIL]"}
+    marks = {"ok": "[ ok ]", "warn": "[warn]", "fail": "[FAIL]", "todo": "[next]"}
     for r in results:
         print(f"{marks[r.status]} {r.label}")
         if r.fix and r.status != "ok":
             for line in r.fix.splitlines():
                 print(f"       {line}")
     print()
-    if fails:
+    if any(r.status == "todo" for r in results) and not fails:
+        print("Not set up yet. Run the command above to start.")
+    elif fails:
         print(f"{len(fails)} problem(s) to fix. Run python star-triage.py setup to fix most of them for you.")
     elif any(r.status == "warn" for r in results):
         print("Working, with warnings above.")
