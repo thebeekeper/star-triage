@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.4.1
+- Security (audit SEC-20): the GitHub token no longer sits in `.git/config` while Claude runs.
+  claude-code-action used to write it into the origin URL, where Claude's Read tool could see
+  it. The Claude step now sets `allowed_bots` to a name no bot has, which makes the action use
+  a credential helper that reads the token from its environment (Claude has no shell). Side
+  effect: Claude Code runs in its default permission mode, so only the listed tools are
+  allowed. The restore step also warns if a token ever appears in a URL in `.git/config`.
+
 ## 5.4.0
 Fixes from a new-user test (UT numbers refer to that test).
 - No more questions about you (UT-6). Reviews judge each repo on general quality and safety,

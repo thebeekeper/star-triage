@@ -5,6 +5,9 @@ Offline. Run: python tests/test_action_steps.py
   UT-12  the restore step names settings that were added, removed or whose value changed
          (e.g. an origin URL rewritten with a token), never prints a value, and puts the
          clean .git/config back. Tampering with the trusted copy still fails the run.
+  SEC-20 both Claude steps set allowed_bots (so claude-code-action keeps the token out of
+         .git/config) and allow no shell; a token URL left in .git/config raises a warning
+         without printing it.
 """
 import os
 import shutil
@@ -39,7 +42,21 @@ def bash(script: str, cwd: Path, env: dict) -> subprocess.CompletedProcess:
                           env=env, capture_output=True, text=True, encoding="utf-8")
 
 
+def claude_steps() -> list:
+    steps = yaml.safe_load((ENGINE / "action.yml").read_text(encoding="utf-8"))["runs"]["steps"]
+    return [s for s in steps if "claude-code-action" in str(s.get("uses", ""))]
+
+
 def main() -> None:
+    cs = claude_steps()
+    check("SEC-20 there are two Claude steps", len(cs) == 2, str(len(cs)))
+    for s in cs:
+        w = s.get("with", {})
+        args = str(w.get("claude_args", ""))
+        allowed = args.split("--allowedTools", 1)[1].split("--", 1)[0] if "--allowedTools" in args else ""
+        check(f"SEC-20 {s.get('name')}: allowed_bots is set", bool(str(w.get("allowed_bots", "")).strip()))
+        check(f"SEC-20 {s.get('name')}: no shell for Claude",
+              '--disallowedTools "Bash' in args and allowed and "Bash" not in allowed, args)
     tmp = Path(tempfile.mkdtemp()).resolve()
     try:
         repo, temp = tmp / "ws", tmp / "runner"
@@ -68,12 +85,20 @@ def main() -> None:
         check("restore names the removed setting", "removed: remote.origin.fetch" in log, log[-300:])
         check("restore names a setting whose value changed", "value changed: remote.origin.url" in log, log[-300:])
         check("restore never prints a value", SECRET not in log and "x-access-token" not in log)
+        check("SEC-20 a token URL in .git/config raises a warning", "::warning title=Token in .git/config" in log,
+              log[-300:])
         check("restore puts the clean .git/config back",
               (repo / ".git" / "config").read_text(encoding="utf-8") == clean)
 
         res = bash(step("Restore .git/config"), repo, {**env, "BEFORE": seal})
-        check("an untouched .git/config logs nothing", res.returncode == 0 and "Restoring" not in res.stdout,
-              res.stdout[-200:])
+        check("an untouched .git/config logs nothing", res.returncode == 0 and "Restoring" not in res.stdout
+              and "::warning" not in res.stdout, res.stdout[-200:])
+        # What claude-code-action does with allowed_bots set: a username-only URL and a helper.
+        subprocess.run(["git", "config", "remote.origin.url", "https://x-access-token@github.com/o/r.git"],
+                       cwd=repo, check=True)
+        res = bash(step("Restore .git/config"), repo, {**env, "BEFORE": seal})
+        check("SEC-20 a username-only URL (credential helper) raises no warning",
+              res.returncode == 0 and "::warning" not in res.stdout, res.stdout[-200:])
         (temp / "trusted" / "new.json").write_text('[{"repo": "evil"}]', encoding="utf-8")
         res = bash(step("Restore .git/config"), repo, {**env, "BEFORE": seal})
         check("tampering with the trusted copy still fails the run",

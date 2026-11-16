@@ -61,11 +61,12 @@ section is written so it can be used as-is in a launch post or README.
   can't reach before it starts, and every decision afterwards is made from that copy. The code
   that runs after Claude isn't in your repo at all, and anything Claude changes outside
   `tracker/` (config, installs.json, the plugin list) is reverted before the next step runs.
-- **Your token stays out of the checkout.** Our checkout doesn't store the GitHub token
-  (`persist-credentials: false`). claude-code-action adds its own token to the origin URL in
-  `.git/config` while Claude runs; star-triage puts back a clean copy right after, and logs
-  which settings were added, removed or changed (names only). Keeping Claude from reading
-  `.git/` during the step is an open item (audit SEC-20).
+- **Your token stays out of Claude's reach.** Our checkout doesn't store the GitHub token
+  (`persist-credentials: false`), and the Claude step is set up so claude-code-action gives git
+  a credential helper instead of writing the token into `.git/config` (5.4.1). Claude has no
+  shell, so it can't read the helper's environment either. Afterwards star-triage puts back a
+  clean `.git/config`, logs which settings changed (names only), and warns if a token ever
+  shows up in a URL there.
 - **A validator gates every run.** Only new notes for that run's repos, with valid labels and a
   risk at or above the scan's floor, are accepted. Anything else fails the run.
 

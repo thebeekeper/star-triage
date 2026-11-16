@@ -194,6 +194,12 @@ runs:
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         github_token: ${{ inputs.github_token }}
+        # SEC-20: any allowed_bots value makes claude-code-action give git a credential
+        # helper that reads the token from its environment, instead of writing the token
+        # into the origin URL in .git/config, where Claude's Read tool could see it. The
+        # name is one no real bot has, so no bot is actually allowed to start a run. It
+        # also keeps Claude Code out of auto permission mode: only the tools allowed below.
+        allowed_bots: star-triage-no-bot
         prompt: >-
           Today is ${{ steps.pick.outputs.today }}. Follow the instructions in
           .triage/triage-prompt.md exactly, using config.yml, .triage/new.json and .triage/scan/.
@@ -211,6 +217,12 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.anthropic_api_key }}
         github_token: ${{ inputs.github_token }}
+        # SEC-20: any allowed_bots value makes claude-code-action give git a credential
+        # helper that reads the token from its environment, instead of writing the token
+        # into the origin URL in .git/config, where Claude's Read tool could see it. The
+        # name is one no real bot has, so no bot is actually allowed to start a run. It
+        # also keeps Claude Code out of auto permission mode: only the tools allowed below.
+        allowed_bots: star-triage-no-bot
         prompt: >-
           Today is ${{ steps.pick.outputs.today }}. Follow the instructions in
           .triage/triage-prompt.md exactly, using config.yml, .triage/new.json and .triage/scan/.
@@ -230,6 +242,10 @@ runs:
         # user and an origin URL with a token). Only setting names are logged, never values:
         # a changed value is found by comparing a hash of each setting's values.
         before="$RUNNER_TEMP/git-config.before"
+        # SEC-20 tripwire: a token in a URL in .git/config means Claude could have read it.
+        if grep -Eq '://[^/@[:space:]]+:[^/@[:space:]]+@' .git/config 2>/dev/null; then
+          echo "::warning title=Token in .git/config::A remote URL in .git/config held a password or token while Claude ran. Nothing was printed. Please report this to the star-triage maintainers."
+        fi
         if [ -f "$before" ]; then
           if ! cmp -s .git/config "$before"; then
             names() { git config --file "$1" --list --name-only 2>/dev/null | LC_ALL=C sort -u; }
