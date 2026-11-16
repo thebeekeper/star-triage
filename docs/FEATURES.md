@@ -192,6 +192,10 @@ section is written so it can be used as-is in a launch post or README.
 - **Catches the commit-email trap.** Setup uses your private GitHub noreply address, and the
   check warns if your commit email points at someone else's account (an easy mistake that
   makes your commits show a stranger as the author).
+- **A README you can follow step by step (5.5.1).** Six install steps, one command per code
+  block, Windows and Mac/Linux side by side, and for each step what you should see and a
+  folded "If it fails" with the fix. The why and the security detail live in
+  `docs/HOW-IT-WORKS.md`, so the README stays about what to do.
 - **A doctor for every problem.** `python3 star-triage.py doctor` checks Python, git, your
   config, your repo layout, the secret, the Actions setting, the last run and the tools installs
   need, and prints the exact fix for each problem.

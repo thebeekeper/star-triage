@@ -133,7 +133,15 @@ after).
 
 `claude setup-token` prints the token on screen, so it ends up in screenshots and pasted
 transcripts. Anyone with it can use your Claude subscription. Make a new one and replace the
-secret:
+secret. The easy way: run the token command again in your own terminal and answer `y` to
+"Replace it?":
+
+```
+python "$HOME/.claude/star-triage.py" token      # Windows
+python3 "$HOME/.claude/star-triage.py" token     # Mac and Linux
+```
+
+Or by hand:
 
 ```
 claude setup-token
@@ -308,6 +316,10 @@ and the first scheduled run may be days away.
 **Fix:** click **star-triage** in the left sidebar under "Workflows". Only then does the
 **Run workflow** button appear on the right. Click it, set "Max repos" to `2`, and run.
 
+Just clicked **Run workflow** (or setup started it) and GitHub says "Workflow run was
+successfully requested" while the list still says there are no runs? Nothing is wrong: refresh
+the page after a few seconds and the run appears.
+
 ### `No Claude credentials` (or `Add a CLAUDE_CODE_OAUTH_TOKEN ... secret`)
 
 **Cause:** the secret is missing, misspelled, or added as a variable instead of a secret, or
@@ -403,12 +415,40 @@ installed into. Nothing else on your PATH with that name is run.
 
 ## The plugin and the launcher
 
-### `Couldn't find plugin "star-triage"` (Claude desktop app)
+### `not a valid GitHub owner/repo shorthand`
 
-The app only knows plugins from marketplaces you've added. Run the two commands in Claude Code:
+Two commands were pasted at once, so Claude Code read them as one marketplace name
+(`thebeekeper/star-triage /plugin install ...`). Press Esc and run them one at a time, each on
+its own:
 
 ```
 /plugin marketplace add thebeekeper/star-triage
+```
+
+```
+/plugin install star-triage@star-triage
+```
+
+### Which scope do I pick when installing the plugin?
+
+`/plugin install star-triage@star-triage` opens a "Plugin Details" screen with a safety warning
+and three choices. Pick **Install for you (user scope)**. The plugin installs your approved
+tools whenever Claude Code starts, in any folder; project or local scope would only run it
+inside one folder (project scope also adds it for everyone who works in that repo). The
+warning is the general one for every plugin: this one runs a short Python check when Claude
+Code starts and installs nothing you haven't approved. Picked another scope by mistake? Run
+`/plugin`, uninstall star-triage, and install it again with user scope.
+
+### `Couldn't find plugin "star-triage"` (Claude desktop app)
+
+The app only knows plugins from marketplaces you've added. Run these in Claude Code, one at a
+time:
+
+```
+/plugin marketplace add thebeekeper/star-triage
+```
+
+```
 /plugin install star-triage@star-triage
 ```
 

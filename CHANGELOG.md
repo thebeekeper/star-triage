@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.5.1
+- README rewritten for a new user (UT-1, UT-2, UT-17): what it does, six install steps with
+  "You should see" and "If it fails" for each, what happens next with one table of the
+  star-triage modes, daily use, updating, and reference tables. Each command has its own code
+  block, with Windows and Mac/Linux side by side. The security model, cost, files, setup by
+  hand, v4 upgrade and FAQ moved to the new `docs/HOW-IT-WORKS.md`.
+- The setup skill and the data repo's README use the same steps and wording.
+- Troubleshooting: "not a valid GitHub owner/repo shorthand", which scope to pick when
+  installing the plugin, replacing a shared token with the `token` command, and "Workflow run
+  was successfully requested" with no run listed yet.
+
 ## 5.5.0
 Less to do for the user, in setup and every day.
 - **Setup from the chat.** `/star-triage:setup` asks four questions (star-triage mode, repos per

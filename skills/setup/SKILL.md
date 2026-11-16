@@ -34,7 +34,9 @@ if that is not found; use the one that works in every command).
      After installing: a new terminal, `gh auth login`, then `/star-triage:setup` again.
    - Not logged in (the second command fails): tell them to run `gh auth login` in a terminal
      (or type `! gh auth login` here), then `/star-triage:setup` again. Stop.
-   - Logged in: say which account. Settings and secrets go to that account's repos.
+   - Logged in: say which account. The data repo, its settings and the secret all go to that
+     account. If it's the wrong one, tell them to run `gh auth switch` (or `gh auth login`) in a
+     terminal, then `/star-triage:setup` again, and stop.
 
 3. Run `PY "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.py"` and note whether a data repo is already
    set up (a "Data repo:" and "GitHub repo: owner/name" line). Old v4 copy ("old all-in-one
@@ -69,15 +71,18 @@ if that is not found; use the one that works in every command).
 
 7. **The token** (when setup said "Not stored yet"): this is the one terminal step, because
    `claude setup-token` prints the token and it must never pass through Claude. Tell the user
-   to open a terminal (PowerShell on Windows, Terminal on Mac), NOT this chat or `!`, and run
-   exactly one line:
+   to open a new terminal window (PowerShell on Windows, Terminal on Mac), NOT this chat or `!`,
+   and run exactly one line:
    - Windows: `python "$HOME/.claude/star-triage.py" token`
    - Mac and Linux: `python3 "$HOME/.claude/star-triage.py" token`
 
-   Warn them: it opens the browser to log in, then shows a long token on screen; copy it and
-   paste it at the hidden prompt. Don't paste it into this chat, don't screenshot or share
-   that window; the command offers to clear the screen afterwards. (An Anthropic API key
-   instead of a subscription: add ` --api-key` to the line.) Then wait for them to say done.
+   Tell them what they will see: the browser opens to log in to Claude, then a long token is
+   printed; copy it and paste it at the hidden prompt (nothing shows while pasting). It ends
+   with "Secret saved." and "Done. Go back to Claude Code and say so". Say yes when it offers
+   to clear the screen. Never share that window: no screenshots, nothing pasted into this
+   chat. If it was shared, run the same line again and answer `y` to "Replace it?". (An
+   Anthropic API key instead of a subscription: add ` --api-key` to the line.) Then wait for
+   them to say done.
 
 8. Check the secret by name only:
    `gh secret list --repo owner/name --json name --jq ".[].name"`. You need
@@ -86,11 +91,17 @@ if that is not found; use the one that works in every command).
    timeout). This is safe to repeat: with the token stored it starts the first run and prints
    its link.
 
-9. Run the doctor once more and say what is left, if anything. Then the next steps: the first
-   run takes 2 to 5 minutes; merge its pull request if one waits (depends on the mode); notes
-   reach the computer with `git pull` (sync does that by itself). Obsidian users: open the data
-   repo folder as a vault, then `tracker/Star Triage.base`. Others: `/star-triage:list`.
-   Problems and fixes: https://github.com/thebeekeper/star-triage/blob/main/docs/TROUBLESHOOTING.md
+9. Run the doctor once more and say what is left, if anything. Then the next steps, short:
+   - The run may take a minute to appear on the Actions page: GitHub can say "Workflow run was
+     successfully requested" while the list still shows no runs; refresh after a few seconds.
+     No stars yet? Star a few repos first: with none, the run has nothing to review.
+   - They should see a green run, then a pull request with one note per repo. It merges itself
+     or waits for them to merge it, depending on the star-triage mode.
+   - Notes and approved installs reach this computer by themselves when Claude Code starts
+     (after the safety delay in the auto modes). `/star-triage:sync now` installs at once.
+   - Reading notes: Obsidian users open the data repo folder as a vault, then
+     `tracker/Star Triage.base`. Others: `/star-triage:list`.
+   - Problems and fixes: https://github.com/thebeekeper/star-triage/blob/main/docs/TROUBLESHOOTING.md
 
 ## Changing settings later
 
