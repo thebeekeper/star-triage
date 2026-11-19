@@ -253,6 +253,25 @@ section is written so it can be used as-is in a launch post or README.
   pause, and the High-risk and blocked rules stay, and it is recorded in the history like an
   automatic install, so `undo` covers it. When something waits, the start line ends with
   "(install now: /star-triage:sync now)".
+- **Review and install now, in one go (5.7.0).** `/star-triage:now` ("check my stars now",
+  "install my new stars now") or `python3 star-triage.py now` starts the workflow on GitHub,
+  waits for it with a progress line every ~20 s, and then installs through the same code as
+  `sync --now`. The review is not skipped: the scan and Claude still run in the Action, and only
+  the schedule and the safety delay are. Design choices:
+  - A run already going (the workflow's concurrency group) is waited for, not doubled.
+  - The started run is found by id (a workflow_dispatch run that wasn't listed before), not by
+    the computer's clock, and the review PR by its update time on GitHub against the run's own
+    start time. Only a PR on a `star-triage/` branch of this repo by github-actions counts.
+  - A review PR that waits for you is shown with what merging approves, then asked about
+    ("Merge it now? [y/N]" in a terminal, AskUserQuestion in the skill). Nothing merges on
+    anything but a yes. The skill answers with `now --merge N --head SHA`, and the merge uses
+    `--match-head-commit`, so a PR that changed after you saw it is not merged.
+  - No new stars is not an error: it still installs what was approved before.
+  - In manual mode it says plainly what installs (ticked items, and Install verdicts in a merged
+    review PR) and lists the notes waiting for a tick, instead of installing nothing silently.
+  - It ends with one summary: repos reviewed, what installed, what waits for you and why (High
+    risk, blocked, not ticked, Skip, manual install, an open review PR), and the restart line
+    when a plugin or MCP server was installed. It gives up after 20 minutes with the run URL.
 - **Four ways to change it, one result.** `python3 star-triage.py mode` (a 1/2/3 menu),
   `mode auto`, the `/star-triage:mode` skill ("turn on auto mode"), and the same question in
   setup. Each one edits `config.yml`, commits "Switch star-triage to <mode>" and pushes; a

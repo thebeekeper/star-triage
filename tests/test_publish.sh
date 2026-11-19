@@ -93,6 +93,8 @@ cleanup
 "$PY" "$ENGINE/tests/test_setup.py" || fail=1
 # Offline list / approve / unapprove checks (reviews.py, the review table without Obsidian).
 "$PY" "$ENGINE/tests/test_reviews.py" || fail=1
+# Offline `now` checks (now.py: start or reuse a run, wait, ask before merging, install without the delay).
+"$PY" "$ENGINE/tests/test_now.py" || fail=1
 # The seal and .git/config restore steps of action.yml, run as written.
 "$PY" "$ENGINE/tests/test_action_steps.py" || fail=1
 exit $fail

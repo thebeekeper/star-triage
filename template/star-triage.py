@@ -2,6 +2,8 @@
 """Run star-triage commands from this folder:  python3 star-triage.py <command> [options]
 (on Windows: python star-triage.py <command>)
 
+    now       review the stars you just added on GitHub and install what is safe, in one go
+              (--max N, --retriage owner/name,...; asks before merging a review PR)
     sync      install, update or remove what you approved
               (--now skips the safety delay; --dry-run, --status, --uninstall NAME, --prune)
     list      your reviewed repos, newest first (--waiting, --repo owner/name)
@@ -37,7 +39,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 # command -> (script in the plugin, arguments put in front of yours)
-COMMANDS = {"sync": ("sync.py", []), "doctor": ("doctor.py", []), "setup": ("setup.py", []),
+COMMANDS = {"now": ("now.py", []), "sync": ("sync.py", []), "doctor": ("doctor.py", []), "setup": ("setup.py", []),
             "mode": ("mode.py", []), "schedule": ("schedule.py", []),
             "pause": ("sync.py", ["--pause"]), "resume": ("sync.py", ["--resume"]), "undo": ("sync.py", ["--undo"]), "history": ("sync.py", ["--history"]),
             "token": ("setup.py", ["--token"]), "list": ("reviews.py", ["list"]),

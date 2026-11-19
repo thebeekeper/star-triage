@@ -11,7 +11,12 @@ servers, CLI tools), pinned to what was reviewed. Full history, decisions and ro
   - `action.yml`: composite GitHub Action that a user's data repo calls as `thebeekeper/star-triage@v1`.
   - Claude Code plugin (repo root = plugin root): `.claude-plugin/plugin.json` + `marketplace.json`
     (source `"./"`), `hooks/hooks.json` (SessionStart → `scripts/sync.py --hook`; it also starts the
-    plugin's self-update when installs.json's engine_version is newer), `skills/setup|sync|mode|list|schedule|triage`.
+    plugin's self-update when installs.json's engine_version is newer), `skills/setup|sync|mode|list|schedule|now|triage`.
+  - `scripts/now.py` (`star-triage.py now`, `/star-triage:now`): starts the workflow with
+    `gh workflow run` (or waits for a run already going), waits up to 20 min, asks before merging
+    an open review PR (terminal `[y/N]`; without a terminal it exits 3 and the skill answers with
+    `--merge N --head SHA` or `--no-merge N`), pulls, then `sync.install_now` (same rules as
+    `sync --now`) and one summary. Never merges without a yes. Tests: `tests/test_now.py`.
   - `scripts/reviews.py`: `list`, `approve`, `unapprove` (the review table without Obsidian); each
     first does the same quiet `git pull --ff-only --autostash` as sync.
   - `scripts/schedule.py`: the two timers. How often GitHub checks = the workflow's `cron` line
@@ -68,6 +73,7 @@ bash tests/test_publish.sh
 python tests/test_auto_mode.py              # also run by test_publish.sh
 python tests/test_setup.py                  # also run by test_publish.sh
 python tests/test_reviews.py                # also run by test_publish.sh
+python tests/test_now.py                    # also run by test_publish.sh
 python tests/test_install_plans.py          # network
 claude plugin validate .
 actionlint template/.github/workflows/star-triage.yml

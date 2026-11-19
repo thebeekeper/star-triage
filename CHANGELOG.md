@@ -1,5 +1,25 @@
 # Changelog
 
+## 5.7.0
+One command for "I just starred something, review it and install it now".
+- **`now` / `/star-triage:now`** (also "check my stars now", "install my new stars now"). Starts
+  the star-triage workflow on GitHub (`--max N`, `--retriage owner/name,...` pass through), finds
+  that run, and waits for it with a progress line every ~20 s (gives up after 20 minutes with the
+  run URL). A run already going is waited for instead of starting a second one. Then:
+  - failed run: its URL and GitHub's reason, and it stops;
+  - no new stars: says so, and still installs what was approved before;
+  - review PR merged itself: goes on;
+  - review PR waits for you: shows what merging approves and asks "Merge it now? [y/N]" (the
+    skill asks with AskUserQuestion). It never merges without a yes, and only the commit you saw.
+  Then it pulls and installs what is approved through the same code as `sync --now`: only the
+  safety delay is skipped; the daily limit, pause, and the High-risk and blocked rules stay. In
+  manual mode it says what installs and lists the notes waiting for a tick. One summary at the
+  end: repos reviewed, installed, waiting for you and why, and the restart line when needed.
+  The review itself still runs on GitHub (scan, then Claude).
+- Stops with one fix when gh is missing or not logged in, or the workflow isn't registered (UT-9).
+- `sync.install_now` can hand its result to a caller (used by `now`); `sync --now` is unchanged.
+- Tests: `tests/test_now.py` (offline; `fake_gh.py` now fakes workflow runs and review PRs).
+
 ## 5.6.0
 Last round before launch: you choose the schedule, and setup says exactly what happens next.
 - **You choose both timers.** Setup asks "How often should GitHub check for new stars?" (every

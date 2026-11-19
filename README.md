@@ -267,6 +267,25 @@ Two kinds of commands. **Claude Code commands** (`/star-triage:...`, or plain wo
 (`python star-triage.py ...`) go in a terminal window, not the chat, opened in your repo folder
 (`Documents/my-stars`). On Mac and Linux, write `python3` instead of `python`.
 
+### Just starred something? Review and install it now
+
+**Claude Code:** `/star-triage:now`, or say "check my stars now" or "install my new stars now".
+It starts the review on GitHub (the security scan, then Claude, as on the schedule), waits for it
+(usually 2 to 5 minutes, with a progress line every 20 seconds), then installs what is approved
+without the safety delay. If the review PR waits for you, it shows what merging approves and asks
+first; it never merges without your yes. It ends with a short summary: how many repos were
+reviewed, what was installed, and what waits for you and why.
+
+| In a terminal, in your repo folder | Command |
+| --- | --- |
+| Review new stars and install what's safe, now | `python star-triage.py now` |
+| The same, at most N repos | `python star-triage.py now --max N` |
+| Review some repos again | `python star-triage.py now --retriage owner/name,owner/name` |
+
+`now` skips only the waiting. The daily limit, pause, and the High-risk and blocked rules stay. In
+manual mode only what you ticked (and Install verdicts in a review PR you merged) installs; `now`
+lists the notes waiting for a tick. Needs the GitHub CLI, logged in (`gh auth login`).
+
 ### Read your notes
 
 Each note says what the repo is, whether it lives up to its claims, how risky it is (with
@@ -382,6 +401,7 @@ Run them in your repo folder: `python star-triage.py <command>` on Windows,
 
 | Command | What it does | In Claude Code |
 | --- | --- | --- |
+| `now` | Review the stars you just added on GitHub, wait, ask before merging, install what's safe (`--max N`, `--retriage owner/name,...`) | `/star-triage:now` |
 | `sync` | Install, update or remove what you approved | `/star-triage:sync` |
 | `sync --now` | The same, without the wait of the auto modes | `/star-triage:sync now` |
 | `sync --dry-run` | Show what `sync` would do; change nothing | |

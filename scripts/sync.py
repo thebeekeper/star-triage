@@ -953,17 +953,21 @@ def undo(scope: str) -> int:
 
 # ----------------------------------------------------------------- --now
 
-def install_now(dry: bool, no_pull: bool, scope: str) -> int:
+def install_now(dry: bool, no_pull: bool, scope: str, out: dict | None = None) -> int:
     """`sync --now`: what the background run would install, now. Only the safety delay is
     skipped: the daily limit, pause, and the High-risk and blocked rules stay, nothing asks a
     question (a blocked item still needs `sync` in your own terminal and a typed "install"),
-    and every step goes to the history, so `undo` covers it."""
+    and every step goes to the history, so `undo` covers it. `out`, when given, receives what
+    happened (now.py builds its summary from it)."""
+    out = {} if out is None else out
     if PAUSE_PATH.exists():
         print("star-triage is paused on this computer, so nothing is installed. Resume first: "
               "python star-triage.py resume")
+        out["paused"] = True
         return 0
     if lock_busy():
         print("A background sync is running right now. Try again in a few minutes.")
+        out["busy"] = True
         return 1
     if not dry:
         STATE_DIR.mkdir(exist_ok=True)
@@ -986,6 +990,7 @@ def install_now(dry: bool, no_pull: bool, scope: str) -> int:
             at = dt.datetime.now().isoformat(timespec="seconds")
             history_add([{"at": at, "batch": result["at"], "auto": True, "now": True, "mode": mode, **row}
                          for row in result["log"]])
+        out.update(result=result, capped=capped, high=high, mode=mode, limit=limit)
         if not steps and not capped and not high:
             print("Nothing waits: everything you approved is installed.")
         for _, key, item in capped:

@@ -528,6 +528,42 @@ wait for good: `python3 star-triage.py schedule --install-wait 0` (or `/star-tri
 which sets `auto_wait_hours` (0 = no wait) and pushes it. Items that share a time are named
 together: "ponytail and brag install after 18:58".
 
+### `now` waits forever, or stops with "Still running after 20 minutes"
+
+`now` (or `/star-triage:now`) waits for the review run on GitHub; most take 2 to 5 minutes.
+- **It says "A star-triage run is already going".** A scheduled run (or one you started) was
+  running, so `now` waits for it instead of starting a second one: the workflow runs one at a
+  time. A long backlog run can take a while; lower `max_per_run`, or run `now --max 3` next time.
+- **"Still running after 20 minutes".** Open the run URL it printed. A run stuck on "Queued"
+  means GitHub Actions is busy or your account's Actions minutes ran out (Settings > Billing).
+  When it has finished, `python3 star-triage.py sync --now` installs what it approved.
+- **"The run was started, but it hasn't shown up".** GitHub accepted the start but didn't list
+  the run within a minute. Look at https://github.com/OWNER/REPO/actions ; if nothing is there,
+  run `python3 star-triage.py setup --repair` (the UT-9 fix) and try again.
+- **"The GitHub CLI is not logged in".** Run `gh auth login` in a terminal, then `now` again.
+- **`now` isn't a known command.** Your repo's `star-triage.py` is older than 5.7.0. Use the
+  copy the plugin keeps up to date: `python "$HOME/.claude/star-triage.py" now`, or run setup
+  again, which refreshes it.
+
+### `now` says nothing was installed
+
+Read its summary: each item that waits has a reason.
+- **"No new stars to review."** The run found nothing new (a repo that already has a note is
+  skipped). Star the repo first; to review one again: `now --retriage owner/name`.
+- **"not ticked"**: in manual mode only ticked items (and Install verdicts in a merged review PR)
+  install. Tick `approve` on the note it names, or `python3 star-triage.py approve owner/name`,
+  then `sync --now`. In the auto modes, an item above your mode's risk limit waits the same way.
+- **"High risk"**: never installs by itself in the auto modes. Read the note, then run
+  `python3 star-triage.py sync` yourself.
+- **"blocked by the security scan"**: run `python3 star-triage.py sync` in your own terminal and
+  type `install` if you still want it after reading its Security scan section.
+- **"review PR #N ... merge it to approve"**: you answered no (or nothing). Merge it on GitHub,
+  then `sync --now`; or run `now --merge N` (from `now`'s output) to merge and install.
+- **"Tomorrow (daily limit N)"**: `auto_daily_limit` was reached today.
+- **"paused"**: `python3 star-triage.py resume`.
+- **"Skip" or "manual install"**: the review says not to install it, or star-triage can't install
+  that kind of thing; the note's Install section says how to do it by hand.
+
 ### `Unable to resolve action thebeekeper/star-triage@v1`
 
 Your workflow can't find the Action. Check the line in `.github/workflows/star-triage.yml` reads
